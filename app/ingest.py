@@ -150,6 +150,8 @@ def parse_gmail_raw(external_id: str, raw: str) -> AlertMessage:
     links: list[str] = []
     for raw_link in raw_links:
         clean = canonical_url(raw_link.rstrip(").,"))
+        if clean and "linkedin.com/comm/jobs/view/" in clean:
+            clean = clean.replace("/comm/jobs/view/", "/jobs/view/", 1)
         if clean and "linkedin.com/jobs/view/" in clean and clean not in links:
             links.append(clean)
     received_at = None

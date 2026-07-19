@@ -128,6 +128,40 @@ def test_gmail_ingest_keeps_metadata_not_full_message_body(tmp_path: Path) -> No
         assert "PRIVATE BODY" not in job.description
 
 
+def test_gmail_ingest_retries_messages_without_recognized_job_links(tmp_path: Path) -> None:
+    pipeline = _module()
+    assert pipeline is not None
+    factory = _factory(tmp_path)
+    mime = "Subject: Unrecognized alert\r\nContent-Type: text/plain\r\n\r\nNo job URL"
+    raw = base64.urlsafe_b64encode(mime.encode()).decode().rstrip("=")
+
+    class Request:
+        def execute(self):
+            return self.value
+
+        def __init__(self, value):
+            self.value = value
+
+    class Messages:
+        def list(self, **_kwargs):
+            return Request({"messages": [{"id": "m-no-job"}]})
+
+        def get(self, **_kwargs):
+            return Request({"id": "m-no-job", "raw": raw})
+
+    class Users:
+        def messages(self):
+            return Messages()
+
+    class Service:
+        def users(self):
+            return Users()
+
+    with factory() as session:
+        assert pipeline.ingest_gmail(session, Service(), query="alerts") == 0
+        assert session.scalar(select(IngestMessage)) is None
+
+
 def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
     pipeline = _module()
     assert pipeline is not None

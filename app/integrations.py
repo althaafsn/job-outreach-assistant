@@ -134,13 +134,44 @@ def iter_gmail_raw(service: Any, *, query: str) -> Iterator[dict[str, str]]:
         response = (
             service.users()
             .messages()
-            .list(userId="me", q=query, pageToken=token, maxResults=100)
+            .list(userId="me", q=query, pageToken=token, maxResults=20)
             .execute()
         )
-        for item in response.get("messages", []):
-            yield (
-                service.users().messages().get(userId="me", id=item["id"], format="raw").execute()
-            )
+        message_ids = [item["id"] for item in response.get("messages", [])]
+        new_batch = getattr(service, "new_batch_http_request", None)
+        if callable(new_batch) and message_ids:
+            results: dict[str, dict[str, str]] = {}
+            errors: list[Exception] = []
+
+            def callback(
+                request_id: str,
+                result: dict[str, str],
+                exception: Exception | None,
+                *,
+                _errors: list[Exception] = errors,
+                _results: dict[str, dict[str, str]] = results,
+            ) -> None:
+                if exception is not None:
+                    _errors.append(exception)
+                else:
+                    _results[request_id] = result
+
+            batch = new_batch(callback=callback)
+            for message_id in message_ids:
+                batch.add(
+                    service.users().messages().get(userId="me", id=message_id, format="raw"),
+                    request_id=message_id,
+                )
+            batch.execute()
+            if errors:
+                raise errors[0]
+            for message_id in message_ids:
+                yield results[message_id]
+        else:
+            for message_id in message_ids:
+                yield service.users().messages().get(
+                    userId="me", id=message_id, format="raw"
+                ).execute()
         token = response.get("nextPageToken")
         if not token:
             break

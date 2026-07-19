@@ -119,6 +119,8 @@ def ingest_gmail(session: Session, service: Any, *, query: str) -> int:
     imported = 0
     for raw_message in iter_gmail_raw(service, query=query):
         alert = parse_gmail_raw(raw_message["id"], raw_message["raw"])
+        if not alert.links:
+            continue
         if not record_ingest_message(
             session,
             "gmail",

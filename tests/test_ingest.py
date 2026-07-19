@@ -116,6 +116,18 @@ def test_decodes_multipart_gmail_alert_and_filters_job_links() -> None:
     assert "Software Developer" in alert.text
 
 
+def test_filters_current_linkedin_comm_job_links() -> None:
+    ingest = _module()
+    assert ingest is not None
+    mime = (
+        "Content-Type: text/html; charset=utf-8\r\n\r\n"
+        '<a href="https://www.linkedin.com/comm/jobs/view/987654321/?trackingId=email">Job</a>'
+    )
+    raw = base64.urlsafe_b64encode(mime.encode()).decode().rstrip("=")
+    alert = ingest.parse_gmail_raw("gmail-current", raw)
+    assert alert.links == ["https://linkedin.com/jobs/view/987654321"]
+
+
 def test_recording_same_gmail_message_twice_is_safe(tmp_path: Path) -> None:
     ingest = _module()
     assert ingest is not None

@@ -13,6 +13,7 @@ _TRACKING_KEYS = {
     "ref",
     "source",
     "trk",
+    "trackingid",
 }
 
 

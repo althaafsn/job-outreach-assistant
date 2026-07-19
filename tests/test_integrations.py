@@ -151,8 +151,11 @@ def test_gmail_reader_paginates_and_requests_raw_messages_only() -> None:
     class Messages:
         def __init__(self):
             self.get_calls = []
+            self.list_calls = []
+            self.batch_calls = 0
 
         def list(self, **kwargs):
+            self.list_calls.append(kwargs)
             token = kwargs.get("pageToken")
             return Request(
                 {"messages": [{"id": "m1"}], "nextPageToken": "next"}
@@ -164,6 +167,21 @@ def test_gmail_reader_paginates_and_requests_raw_messages_only() -> None:
             self.get_calls.append(kwargs)
             return Request({"id": kwargs["id"], "raw": "cmF3"})
 
+        def batch(self):
+            self.batch_calls += 1
+            return Batch()
+
+    class Batch:
+        def __init__(self):
+            self.requests = []
+
+        def add(self, request, request_id):
+            self.requests.append((request, request_id))
+
+        def execute(self):
+            for request, request_id in self.requests:
+                callback_holder["callback"](request_id, request.execute(), None)
+
     messages = Messages()
 
     class Users:
@@ -174,6 +192,13 @@ def test_gmail_reader_paginates_and_requests_raw_messages_only() -> None:
         def users(self):
             return Users()
 
+        def new_batch_http_request(self, callback):
+            callback_holder["callback"] = callback
+            return messages.batch()
+
+    callback_holder = {}
     rows = list(integrations.iter_gmail_raw(Service(), query="newer_than:180d"))
     assert [row["id"] for row in rows] == ["m1", "m2"]
+    assert all(call["maxResults"] == 20 for call in messages.list_calls)
     assert all(call["format"] == "raw" for call in messages.get_calls)
+    assert messages.batch_calls == 2
