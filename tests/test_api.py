@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -304,6 +305,40 @@ def test_optional_ai_and_search_actions_explain_missing_configuration(
         get_settings.cache_clear()
 
 
+def test_paste_workflow_stream_returns_safe_error_event(tmp_path: Path, monkeypatch) -> None:
+    from app import api
+    from app.config import get_settings
+
+    class FakeOpenRouter:
+        def __init__(self, **_kwargs):
+            pass
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("secret-token raw model response")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setenv("BRAVE_API_KEY", "test")
+    get_settings.cache_clear()
+    monkeypatch.setattr(api, "OpenRouterClient", FakeOpenRouter)
+    monkeypatch.setattr(api, "extract_job", explode)
+    try:
+        with _client(tmp_path) as client:
+            response = client.post(
+                "/api/workflow/analyze",
+                json={"text": "Data Engineer\nExample Health\n" + "data systems " * 60},
+            )
+        events = [json.loads(line) for line in response.text.splitlines()]
+        assert events[-1] == {
+            "type": "error",
+            "message": "Workflow failed. Saved progress was kept.",
+            "elapsed_ms": events[-1]["elapsed_ms"],
+        }
+        assert "secret-token" not in response.text
+        assert "raw model response" not in response.text
+    finally:
+        get_settings.cache_clear()
+
+
 def test_angle_generation_accepts_a_user_selected_perspective(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         operation = client.get("/openapi.json").json()["paths"][
@@ -441,6 +476,15 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
             )
 
     def fake_research(session: Session, job, _search, _ai, **_kwargs) -> int:
+        progress = _kwargs["progress"]
+        progress(
+            {
+                "event": "search",
+                "phase": "contact_discovery",
+                "query": '"Example Health" data manager',
+                "results": 4,
+            }
+        )
         contact_id = save_recommendations(
             session,
             job,
@@ -468,6 +512,15 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
             ),
             kind="official",
         )
+        progress(
+            {
+                "event": "source",
+                "decision": "accepted",
+                "person": "Ada Lovelace",
+                "url": "https://example.org/program",
+                "evidence_id": 1,
+            }
+        )
         return 1
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
@@ -482,7 +535,21 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
                 json={"text": source, "url": "https://example.org/jobs/JR12345"},
             )
             assert response.status_code == 200
-            result = response.json()
+            assert response.headers["content-type"].startswith("application/x-ndjson")
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert [event["stage"] for event in events if event["type"] == "stage"] == [
+                1,
+                2,
+                3,
+                4,
+            ]
+            assert all(event["elapsed_ms"] >= 0 for event in events)
+            assert any(
+                event.get("detail", {}).get("query") == '"Example Health" data manager'
+                for event in events
+            )
+            assert events[-1]["type"] == "complete"
+            result = events[-1]["result"]
             assert result["stage"] == "complete"
             assert result["job"]["quality_status"] == "verified"
             assert result["job"]["title"] == "Data Engineer"

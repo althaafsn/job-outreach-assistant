@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import queue
+import threading
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -9,7 +13,7 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, delete, desc, func, select
@@ -43,6 +47,8 @@ from app.models import (
 )
 from app.pipeline import extract_job, generate_angles, research_job
 from app.research import ContactCandidate, save_evidence, save_recommendations
+
+logger = logging.getLogger(__name__)
 
 
 class RequestModel(BaseModel):
@@ -290,6 +296,27 @@ def _contact(contact: Contact) -> Json:
         "profile_url": contact.profile_url,
         "notes": contact.notes,
     }
+
+
+def _workflow_detail_message(detail: Json) -> str:
+    event = detail.get("event")
+    if event == "search":
+        count = int(detail.get("results", 0))
+        person = detail.get("person")
+        return (
+            f"Found {count} public results for {person}."
+            if person
+            else f"Found {count} candidate results."
+        )
+    if event == "model":
+        return f"Selected {int(detail.get('selected', 0))} relevant people."
+    if event == "contact":
+        action = "Selected" if detail.get("decision") == "accepted" else "Skipped"
+        return f"{action} {detail.get('person', 'a candidate')}."
+    if event == "source":
+        action = "Kept" if detail.get("decision") == "accepted" else "Skipped"
+        return f"{action} a public source for {detail.get('person', 'this person')}."
+    return "Research step completed."
 
 
 def create_app(target_engine: Engine = default_engine) -> FastAPI:
@@ -635,72 +662,204 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         return _job(job)
 
     @app.post("/api/workflow/analyze")
-    def analyze_workflow(body: JobImport, session: Session = Depends(db)) -> Json:
+    def analyze_workflow(body: JobImport) -> StreamingResponse:
         settings = get_settings()
         if not settings.openrouter_api_key:
             raise HTTPException(
                 status_code=409,
                 detail="OpenRouter is not configured. Add OPENROUTER_API_KEY to .env.",
             )
-        incoming = parse_job_text(body.text, company=body.company, url=body.url)
-        incoming.description = body.text
-        incoming.external_id = f"manual-{uuid.uuid4()}"
-        job = upsert_job(session, incoming)
-        ai = OpenRouterClient(
-            api_key=settings.openrouter_api_key,
-            session=session,
-            model=settings.openrouter_model,
-            daily_limit=settings.openrouter_daily_request_limit,
-        )
-        warnings: list[str] = []
-        try:
-            extract_job(session, job, ai)
-        except DeferredAI as exc:
-            warnings.append(str(exc))
-            return {
-                "stage": "pending",
-                "warnings": warnings,
-                "job": job_detail(job.id, session),
-            }
-        if job.quality_status != "verified":
-            return {
-                "stage": job.quality_status,
-                "warnings": [job.extraction_error] if job.extraction_error else [],
-                "job": job_detail(job.id, session),
-            }
-        if not settings.brave_api_key:
-            return {
-                "stage": "job_verified",
-                "warnings": ["Brave Search is not configured."],
-                "job": job_detail(job.id, session),
-            }
-        try:
-            research_job(
-                session,
-                job,
-                BraveSearchClient(api_key=settings.brave_api_key),
-                ai,
-                department=settings.research_department,
+        events: queue.Queue[Json | None] = queue.Queue()
+        started = time.monotonic()
+
+        def emit(event: Json) -> None:
+            event["elapsed_ms"] = max(0, int((time.monotonic() - started) * 1000))
+            events.put(event)
+
+        def complete(session: Session, job: Job, stage: str, warnings: list[str]) -> None:
+            emit(
+                {
+                    "type": "complete",
+                    "result": {
+                        "stage": stage,
+                        "warnings": warnings,
+                        "job": job_detail(job.id, session),
+                    },
+                }
             )
-        except DeferredIntegration as exc:
-            warnings.append(str(exc))
-        if session.scalar(select(JobContact.id).where(JobContact.job_id == job.id)):
-            profile = (
-                settings.user_profile_file.read_text(encoding="utf-8")[:4000]
-                if settings.user_profile_file.exists()
-                else "Recent Computer Engineering graduate seeking entry-level roles."
-            )
+
+        def worker() -> None:
+            warnings: list[str] = []
             try:
-                generate_angles(session, job, ai, profile_summary=profile)
-            except DeferredAI as exc:
-                warnings.append(str(exc))
-        detail = job_detail(job.id, session)
-        has_angles = any(contact["angles"] for contact in detail["contacts"])
-        return {
-            "stage": "complete" if has_angles else "people_found",
-            "warnings": warnings,
-            "job": detail,
-        }
+                with sessions() as session:
+                    emit(
+                        {
+                            "type": "stage",
+                            "stage": 1,
+                            "total_stages": 4,
+                            "message": "Cleaning and verifying the job posting…",
+                        }
+                    )
+                    incoming = parse_job_text(body.text, company=body.company, url=body.url)
+                    incoming.description = body.text
+                    incoming.external_id = f"manual-{uuid.uuid4()}"
+                    job = upsert_job(session, incoming)
+                    ai = OpenRouterClient(
+                        api_key=settings.openrouter_api_key,
+                        session=session,
+                        model=settings.openrouter_model,
+                        daily_limit=settings.openrouter_daily_request_limit,
+                    )
+                    try:
+                        extract_job(session, job, ai)
+                    except DeferredAI as exc:
+                        warnings.append(str(exc))
+                        emit({"type": "warning", "message": str(exc)})
+                        complete(session, job, "pending", warnings)
+                        return
+                    if job.quality_status != "verified":
+                        if job.extraction_error:
+                            warnings.append(job.extraction_error)
+                            emit({"type": "warning", "message": job.extraction_error})
+                        complete(session, job, job.quality_status, warnings)
+                        return
+                    emit(
+                        {
+                            "type": "stage",
+                            "stage": 2,
+                            "total_stages": 4,
+                            "message": "Finding relevant people…",
+                        }
+                    )
+                    if not settings.brave_api_key:
+                        warning = "Brave Search is not configured."
+                        warnings.append(warning)
+                        emit({"type": "warning", "message": warning})
+                        complete(session, job, "job_verified", warnings)
+                        return
+
+                    stage_three_started = False
+
+                    def research_progress(detail: Json) -> None:
+                        nonlocal stage_three_started
+                        is_research = (
+                            detail.get("phase") == "person_research"
+                            or detail.get("event") == "source"
+                        )
+                        stage = 3 if is_research else 2
+                        if stage == 3 and not stage_three_started:
+                            stage_three_started = True
+                            emit(
+                                {
+                                    "type": "stage",
+                                    "stage": 3,
+                                    "total_stages": 4,
+                                    "message": "Researching public work…",
+                                }
+                            )
+                        emit(
+                            {
+                                "type": "detail",
+                                "stage": stage,
+                                "message": _workflow_detail_message(detail),
+                                "detail": detail,
+                            }
+                        )
+
+                    try:
+                        research_job(
+                            session,
+                            job,
+                            BraveSearchClient(api_key=settings.brave_api_key),
+                            ai,
+                            department=settings.research_department,
+                            progress=research_progress,
+                        )
+                    except (DeferredAI, DeferredIntegration) as exc:
+                        warnings.append(str(exc))
+                        emit({"type": "warning", "message": str(exc)})
+                    if not stage_three_started:
+                        emit(
+                            {
+                                "type": "stage",
+                                "stage": 3,
+                                "total_stages": 4,
+                                "message": "Researching public work…",
+                            }
+                        )
+                    emit(
+                        {
+                            "type": "stage",
+                            "stage": 4,
+                            "total_stages": 4,
+                            "message": "Preparing grounded conversation ideas…",
+                        }
+                    )
+                    if session.scalar(
+                        select(JobContact.id).where(JobContact.job_id == job.id)
+                    ):
+                        profile = (
+                            settings.user_profile_file.read_text(encoding="utf-8")[:4000]
+                            if settings.user_profile_file.exists()
+                            else (
+                                "Recent Computer Engineering graduate seeking "
+                                "entry-level roles."
+                            )
+                        )
+                        try:
+                            created = generate_angles(
+                                session,
+                                job,
+                                ai,
+                                profile_summary=profile,
+                            )
+                            emit(
+                                {
+                                    "type": "detail",
+                                    "stage": 4,
+                                    "message": f"Created {created} grounded conversation ideas.",
+                                    "detail": {
+                                        "event": "angles",
+                                        "created": created,
+                                    },
+                                }
+                            )
+                        except DeferredAI as exc:
+                            warnings.append(str(exc))
+                            emit({"type": "warning", "message": str(exc)})
+                    detail = job_detail(job.id, session)
+                    has_angles = any(contact["angles"] for contact in detail["contacts"])
+                    emit(
+                        {
+                            "type": "complete",
+                            "result": {
+                                "stage": "complete" if has_angles else "people_found",
+                                "warnings": warnings,
+                                "job": detail,
+                            },
+                        }
+                    )
+            except Exception:
+                logger.exception("Paste workflow failed")
+                emit(
+                    {
+                        "type": "error",
+                        "message": "Workflow failed. Saved progress was kept.",
+                    }
+                )
+            finally:
+                events.put(None)
+
+        def stream() -> Iterator[str]:
+            threading.Thread(target=worker, daemon=True).start()
+            while (event := events.get()) is not None:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.patch("/api/jobs/{job_id}")
     def patch_job(job_id: int, body: JobPatch, session: Session = Depends(db)) -> Json:
