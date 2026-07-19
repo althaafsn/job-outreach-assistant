@@ -785,6 +785,11 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             require_contact(contact_id, session),
             **body.model_dump(),
         )
+        if evidence is None:
+            raise HTTPException(
+                status_code=422,
+                detail="This page is not usable as public evidence.",
+            )
         return {
             "id": evidence.id,
             "title": evidence.title,

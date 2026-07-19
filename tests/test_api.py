@@ -202,7 +202,12 @@ def test_add_contact_evidence_angle_draft_and_manual_outreach_event(
             json={
                 "title": "Public program page",
                 "source_url": "https://example.edu/program",
-                "excerpt": "Ada led the public launch of a research data training program.",
+                "excerpt": (
+                    "Ada Lovelace led the public launch of a research data training "
+                    "program at Example University. The program helps researchers "
+                    "document reproducible workflows, validate records, and manage "
+                    "sensitive data through practical workshops."
+                ),
                 "kind": "official",
             },
         )
@@ -240,6 +245,33 @@ def test_add_contact_evidence_angle_draft_and_manual_outreach_event(
         detail = client.get(f"/api/jobs/{job_id}").json()
         assert detail["contacts"][0]["evidence"][0]["id"] == evidence.json()["id"]
         assert detail["contacts"][0]["angles"][0]["id"] == angle.json()["id"]
+
+
+def test_add_contact_evidence_rejects_unusable_source(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        job_id = client.post(
+            "/api/jobs/import",
+            json={"text": "Data Developer\nJob Summary\nBuild data tools.", "company": "Example U"},
+        ).json()["id"]
+        contact_id = client.post(
+            f"/api/jobs/{job_id}/contacts",
+            json={
+                "name": "Ada Lovelace",
+                "title": "Research Data Manager",
+                "company": "Example U",
+            },
+        ).json()["id"]
+        response = client.post(
+            f"/api/contacts/{contact_id}/evidence",
+            json={
+                "title": "Ada Lovelace | LinkedIn",
+                "source_url": "https://linkedin.com/in/ada",
+                "excerpt": "Sign in or join now to view this profile.",
+                "kind": "official",
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "This page is not usable as public evidence."
 
 
 def test_validation_and_missing_resources_are_clear(tmp_path: Path) -> None:
@@ -296,13 +328,18 @@ def test_private_data_deletion_requires_explicit_confirmation(tmp_path: Path) ->
         ).json()["id"]
         evidence_id = client.post(
             f"/api/contacts/{contact_id}/evidence",
-            json={
-                "title": "Official profile",
-                "source_url": "https://example.edu/ada",
-                "excerpt": "Ada leads research data services.",
-                "kind": "official",
-            },
-        ).json()["id"]
+                json={
+                    "title": "Official profile",
+                    "source_url": "https://example.edu/ada",
+                    "excerpt": (
+                        "Ada Lovelace leads research data services at Example University. "
+                        "Her group develops secure platforms, documents data-management "
+                        "practices, and trains researchers to maintain accurate records "
+                        "throughout the project lifecycle."
+                    ),
+                    "kind": "official",
+                },
+            ).json()["id"]
         angle_id = client.post(
             f"/api/jobs/{job_id}/contacts/{contact_id}/angles",
             json={
@@ -423,7 +460,12 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
             contact,
             title="Public program",
             source_url="https://example.org/program",
-            excerpt="Ada launched a public research data training program.",
+            excerpt=(
+                "Ada Lovelace launched a public research data training program at "
+                "Example Health. The program teaches research teams to validate "
+                "records, document reproducible workflows, and protect sensitive "
+                "information throughout the project lifecycle."
+            ),
             kind="official",
         )
         return 1

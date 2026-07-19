@@ -101,6 +101,8 @@ def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
                 text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
         except (FetchRejected, httpx.HTTPError):
             text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
+        if _is_login_shell(text):
+            raise FetchRejected("Public page is an authentication or consent shell")
         return text
     finally:
         if own_fetcher:

@@ -100,7 +100,13 @@ def test_evidence_is_short_deduplicated_and_keeps_provenance(tmp_path: Path) -> 
             contact,
             title="Public research profile",
             source_url="https://example.edu/ada",
-            excerpt="A" * 900,
+            excerpt=(
+                "Ada Lovelace leads research data services at Example University. "
+                "Her team builds secure data platforms for public-interest research, "
+                "documents reproducible workflows, and trains researchers in careful "
+                "data stewardship. "
+            )
+            * 5,
             kind="official",
         )
         second = research.save_evidence(
@@ -108,13 +114,87 @@ def test_evidence_is_short_deduplicated_and_keeps_provenance(tmp_path: Path) -> 
             contact,
             title="Public research profile",
             source_url="https://example.edu/ada",
-            excerpt="A" * 900,
+            excerpt=(
+                "Ada Lovelace leads research data services at Example University. "
+                "Her team builds secure data platforms for public-interest research, "
+                "documents reproducible workflows, and trains researchers in careful "
+                "data stewardship. "
+            )
+            * 5,
             kind="official",
         )
+        assert first is not None
+        assert second is not None
         assert second.id == first.id
         assert len(first.excerpt) == 500
         assert first.source_url == "https://example.edu/ada"
         assert len(session.scalars(select(ContactEvidence)).all()) == 1
+
+
+def test_evidence_rejects_linkedin_shells_and_unrelated_pages(tmp_path: Path) -> None:
+    research = _module()
+    assert research is not None
+    with _session(tmp_path) as session:
+        contact = Contact(name="Ada Lovelace", title="Manager", company="Example U")
+        session.add(contact)
+        session.commit()
+
+        linkedin = research.save_evidence(
+            session,
+            contact,
+            title="Ada Lovelace | LinkedIn",
+            source_url="https://ca.linkedin.com/in/ada",
+            excerpt=(
+                "Ada Lovelace. Agree and join LinkedIn. Sign in to see this profile. "
+                "User Agreement Privacy Policy Cookie Policy and community guidelines."
+            ),
+        )
+        title_only = research.save_evidence(
+            session,
+            contact,
+            title="Ada Lovelace - Manager",
+            source_url="https://directory.example.edu/ada",
+            excerpt="Ada Lovelace is a manager at Example University.",
+        )
+        unrelated = research.save_evidence(
+            session,
+            contact,
+            title="Research data services",
+            source_url="https://example.edu/research-data",
+            excerpt=(
+                "Our university provides secure repositories, consultation, training, "
+                "and reproducible research support for faculty and graduate students. "
+                "The service follows institutional privacy and security requirements."
+            ),
+        )
+
+        assert linkedin is None
+        assert title_only is None
+        assert unrelated is None
+        assert session.scalars(select(ContactEvidence)).all() == []
+
+
+def test_evidence_accepts_substantive_named_public_work(tmp_path: Path) -> None:
+    research = _module()
+    assert research is not None
+    with _session(tmp_path) as session:
+        contact = Contact(name="Ada Lovelace", title="Manager", company="Example U")
+        session.add(contact)
+        session.commit()
+        evidence = research.save_evidence(
+            session,
+            contact,
+            title="Ada Lovelace leads the Open Records Project",
+            source_url="https://example.edu/news/open-records",
+            excerpt=(
+                "Ada Lovelace leads the Open Records Project at Example University. "
+                "The project standardizes public research records and publishes reusable "
+                "documentation so community partners can audit and extend the datasets. "
+                "Lovelace described how the team balances access, privacy, and validation."
+            ),
+        )
+        assert evidence is not None
+        assert evidence.title == "Ada Lovelace leads the Open Records Project"
 
 
 def test_builds_bounded_public_search_queries() -> None:

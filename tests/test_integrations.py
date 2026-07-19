@@ -8,7 +8,7 @@ import pytest
 
 from app.db import create_schema, make_engine, make_session_factory
 from app.models import UsageCounter
-from app.security import SafeFetcher
+from app.security import FetchRejected, SafeFetcher
 
 
 def _module():
@@ -166,6 +166,34 @@ def test_public_page_reader_falls_back_when_direct_page_is_a_login_shell() -> No
         "https://example.edu/job",
         "https://r.jina.ai/https://example.edu/job",
     ]
+
+
+def test_public_page_reader_rejects_login_shell_returned_by_jina() -> None:
+    integrations = _module()
+    assert integrations is not None
+
+    def public_dns(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "linkedin.com":
+            return httpx.Response(403, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text=(
+                "Title: Sign Up | LinkedIn\n"
+                "Agree & Join LinkedIn. Sign in or join now to continue. "
+                "User Agreement Privacy Policy Cookie Policy."
+            ),
+        )
+
+    fetcher = SafeFetcher(transport=httpx.MockTransport(handler), resolver=public_dns)
+    with pytest.raises(FetchRejected, match="authentication or consent shell"):
+        integrations.read_public_page(
+            "https://linkedin.com/in/ada-lovelace",
+            fetcher=fetcher,
+        )
 
 
 def test_gmail_reader_paginates_and_requests_raw_messages_only() -> None:

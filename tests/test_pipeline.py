@@ -201,12 +201,14 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
             pipeline.research_job(
                 session,
                 job,
-                Search(),
-                read_page=lambda _url: (
-                    "Ada leads a public research data training program. "
-                    "Contact ada@example.edu."
-                ),
-            )
+                    Search(),
+                    read_page=lambda _url: (
+                        "Ada Lovelace leads a public research data training program at "
+                        "Example University. The program teaches research teams to "
+                        "validate records, document reproducible workflows, and protect "
+                        "sensitive information. Contact ada@example.edu."
+                    ),
+                )
             == 1
         )
         evidence = session.scalar(select(ContactEvidence))

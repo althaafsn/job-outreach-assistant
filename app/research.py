@@ -109,8 +109,14 @@ def save_evidence(
     source_url: str,
     excerpt: str,
     kind: str = "professional",
-) -> ContactEvidence:
+) -> ContactEvidence | None:
     clean_excerpt = " ".join(excerpt.split())[:500]
+    if evidence_rejection_reason(
+        f"{title} {clean_excerpt}",
+        person_name=contact.name,
+        source_url=source_url,
+    ):
+        return None
     digest = hashlib.sha256(
         f"{canonical_url(source_url) or source_url}\n{clean_excerpt}".encode()
     ).hexdigest()
@@ -133,6 +139,35 @@ def save_evidence(
     session.add(evidence)
     session.commit()
     return evidence
+
+
+def evidence_rejection_reason(
+    text: str,
+    *,
+    person_name: str,
+    source_url: str,
+) -> str | None:
+    host = (urlsplit(source_url).hostname or "").casefold()
+    normalized = normalize_text(text)
+    normalized_name = normalize_text(person_name)
+    name_parts = normalized_name.split()
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return "LinkedIn is a profile link, not a research source"
+    shell_markers = (
+        "agree join linkedin",
+        "sign up linkedin",
+        "sign in to see",
+        "user agreement privacy policy cookie policy",
+    )
+    if any(marker in normalized for marker in shell_markers):
+        return "Authentication or consent shell"
+    if len(normalized.split()) < 20:
+        return "Page has too little substantive content"
+    if normalized_name not in normalized and (
+        not name_parts or name_parts[-1] not in normalized.split()
+    ):
+        return "Page does not identify the selected person"
+    return None
 
 
 def save_public_emails(
