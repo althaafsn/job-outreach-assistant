@@ -21,7 +21,7 @@ Requirements: `uv`, Node.js 20+, and Git.
 cp .env.example .env
 mkdir -p data secrets
 uv sync --all-groups
-cd web && npm install && cd ..
+cd web && npm install && npm run build && cd ..
 uv run job-outreach init-db
 uv run job-outreach serve
 ```

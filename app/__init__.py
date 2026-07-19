@@ -1,2 +1,1 @@
 """Job Outreach Assistant backend."""
-

@@ -199,4 +199,3 @@ class UsageCounter(Base):
     kind: Mapped[str] = mapped_column(String(40), index=True)
     used: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (UniqueConstraint("day", "kind"),)
-

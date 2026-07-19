@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     google_search_engine_id: str = ""
     google_daily_query_limit: int = 80
+    target_job_queries: str = "junior data engineer|junior software developer|data analyst"
+    target_location: str = "Vancouver BC"
+    research_department: str = ""
     gmail_credentials_file: Path = Path("./secrets/gmail_credentials.json")
     gmail_token_file: Path = Path("./secrets/gmail_token.json")
     gmail_query: str = (
@@ -30,4 +33,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

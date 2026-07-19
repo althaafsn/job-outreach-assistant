@@ -17,9 +17,7 @@ def _date(day: str | date | None) -> date:
 def reserve(session: Session, kind: str, limit: int, *, day: str | date | None = None) -> bool:
     target_day = _date(day)
     counter = session.scalar(
-        select(UsageCounter).where(
-            UsageCounter.kind == kind, UsageCounter.day == target_day
-        )
+        select(UsageCounter).where(UsageCounter.kind == kind, UsageCounter.day == target_day)
     )
     if counter is None:
         counter = UsageCounter(kind=kind, day=target_day, used=0)
@@ -34,9 +32,6 @@ def reserve(session: Session, kind: str, limit: int, *, day: str | date | None =
 
 def used(session: Session, kind: str, *, day: str | date | None = None) -> int:
     value = session.scalar(
-        select(UsageCounter.used).where(
-            UsageCounter.kind == kind, UsageCounter.day == _date(day)
-        )
+        select(UsageCounter.used).where(UsageCounter.kind == kind, UsageCounter.day == _date(day))
     )
     return value or 0
-

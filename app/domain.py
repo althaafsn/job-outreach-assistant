@@ -33,8 +33,10 @@ def canonical_url(value: str | None) -> str | None:
     if host.startswith("www."):
         host = host[4:]
     port = parts.port
-    if port and not (parts.scheme.casefold() == "http" and port == 80) and not (
-        parts.scheme.casefold() == "https" and port == 443
+    if (
+        port
+        and not (parts.scheme.casefold() == "http" and port == 80)
+        and not (parts.scheme.casefold() == "https" and port == 443)
     ):
         host = f"{host}:{port}"
     query = [
@@ -43,9 +45,9 @@ def canonical_url(value: str | None) -> str | None:
         if not key.casefold().startswith("utm_") and key.casefold() not in _TRACKING_KEYS
     ]
     path = parts.path.rstrip("/") or "/"
-    return urlunsplit(
-        (parts.scheme.casefold(), host, path, urlencode(sorted(query)), "")
-    ).rstrip("/")
+    return urlunsplit((parts.scheme.casefold(), host, path, urlencode(sorted(query)), "")).rstrip(
+        "/"
+    )
 
 
 def job_keys(
@@ -70,10 +72,7 @@ def job_keys(
     if keys:
         return keys
     digest = hashlib.sha256(normalize_text(description).encode()).hexdigest()[:16]
-    return [
-        "content:"
-        f"{company_key}:{normalize_text(title)}:{normalize_text(location)}:{digest}"
-    ]
+    return [f"content:{company_key}:{normalize_text(title)}:{normalize_text(location)}:{digest}"]
 
 
 def contact_keys(

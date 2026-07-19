@@ -45,7 +45,7 @@ React 19, TypeScript, Vite, Vitest, and plain CSS.
 - [x] Add Python/Node metadata and documented local commands.
 - [x] Ignore secrets, OAuth tokens, data, databases, logs, builds, and Terraform state.
 - [x] Run `uv sync --all-groups` with Python 3.12.
-- [ ] Commit the scaffold after the first green backend check.
+- [x] Commit the scaffold after the first green backend check.
 
 ## Task 2: Domain model and deterministic core
 
@@ -71,11 +71,11 @@ counters, state transitions, and database initialization.
 **Produces:** `SafeFetcher`, URL validation, email confidence classification,
 and daily quota reservation.
 
-- [ ] Test rejection of loopback, private, link-local, metadata, non-HTTP,
+- [x] Test rejection of loopback, private, link-local, metadata, non-HTTP,
   redirect-to-private, oversized, and non-text fetches.
-- [ ] Test public URL acceptance with mocked DNS/HTTP.
-- [ ] Test confidence classes for public and inferred work emails.
-- [ ] Test transactional daily quota limits and next-day reset.
+- [x] Test public URL acceptance with mocked DNS/HTTP.
+- [x] Test confidence classes for public and inferred work emails.
+- [x] Test transactional daily quota limits and next-day reset.
 
 ## Task 4: Job ingestion and lineage
 
@@ -85,11 +85,11 @@ and daily quota reservation.
 **Produces:** Gmail MIME parsing, deterministic job extraction, manual
 URL/text import, ATS refresh, deduplication, and source lineage.
 
-- [ ] Test multipart Gmail alerts, encoded headers, HTML links, and repeated ingestion.
-- [ ] Test manual text containing a Workday-style job description.
-- [ ] Test source lineage survives cross-source deduplication.
-- [ ] Implement read-only OAuth and Gmail query pagination.
-- [ ] Discard full Gmail bodies after extracted fields and source metadata are persisted.
+- [x] Test multipart Gmail alerts, encoded headers, HTML links, and repeated ingestion.
+- [x] Test manual text containing a Workday-style job description.
+- [x] Test source lineage survives cross-source deduplication.
+- [x] Implement read-only OAuth and Gmail query pagination.
+- [x] Discard full Gmail bodies after extracted fields and source metadata are persisted.
 
 ## Task 5: Search, contact discovery, and evidence
 
@@ -99,11 +99,11 @@ URL/text import, ATS refresh, deduplication, and source lineage.
 **Produces:** six-month search backfill, ranked contact candidates, globally
 deduplicated contacts, evidence excerpts, and refresh timestamps.
 
-- [ ] Test bounded search queries and pagination within the daily budget.
-- [ ] Test role-aware contact scoring and the three-contact cap.
-- [ ] Test evidence sanitization, excerpt limits, provenance, and duplicate removal.
-- [ ] Test contact reuse across multiple jobs.
-- [ ] Implement safe public-page retrieval with clear partial/failure states.
+- [x] Test bounded search queries and pagination within the daily budget.
+- [x] Test role-aware contact scoring and the three-contact cap.
+- [x] Test evidence sanitization, excerpt limits, provenance, and duplicate removal.
+- [x] Test contact reuse across multiple jobs.
+- [x] Implement safe public-page retrieval with clear partial/failure states.
 
 ## Task 6: Grounded OpenRouter workflows
 
@@ -113,13 +113,13 @@ deduplicated contacts, evidence excerpts, and refresh timestamps.
 **Produces:** validated extraction, cited angle suggestions, message drafts,
 model/request records, and offline contract evaluation.
 
-- [ ] Define strict Pydantic response models and versioned prompts.
-- [ ] Test malformed JSON, unknown evidence IDs, unsupported claims, 429 deferral,
+- [x] Define strict Pydantic response models and versioned prompts.
+- [x] Test malformed JSON, unknown evidence IDs, unsupported claims, 429 deferral,
   and one repair attempt.
-- [ ] Test connection notes at 280 characters or fewer, messages at 50–90 words,
+- [x] Test connection notes at 280 characters or fewer, messages at 50–90 words,
   and emails at 90–140 words with two subjects.
-- [ ] Test that prompts exclude emails, Gmail metadata, private notes, and full pages.
-- [ ] Add synthetic evaluation packs and `job-outreach eval-ai`.
+- [x] Test that prompts exclude emails, Gmail metadata, private notes, and full pages.
+- [x] Add synthetic evaluation packs and `job-outreach eval-ai`.
 
 ## Task 7: API and command-line workflow
 
@@ -130,10 +130,10 @@ model/request records, and offline contract evaluation.
 `init-db`, `gmail-auth`, `ingest`, `import-text`, `backfill`,
 `research-pending`, `run-daily`, `eval-ai`, `export`, `doctor`, and `serve`.
 
-- [ ] Test API validation, pagination, state changes, regeneration, and delete/export.
-- [ ] Test daily-run file locking, idempotence, interruption recording, and resume.
-- [ ] Test exhausted quotas defer work rather than losing it.
-- [ ] Implement structured logs without secrets or full content.
+- [x] Test API validation, pagination, state changes, regeneration, and delete/export.
+- [x] Test daily-run file locking, idempotence, interruption recording, and resume.
+- [x] Test exhausted quotas defer work rather than losing it.
+- [x] Implement structured run records without secrets or full content.
 
 ## Task 8: React review workspace
 
@@ -142,24 +142,24 @@ model/request records, and offline contract evaluation.
 **Produces:** responsive dashboard, jobs, contacts/evidence, angle review,
 draft composer, pipeline status, duplicate review, and settings/profile UI.
 
-- [ ] Add API types/client and route shell.
-- [ ] Build dashboard cards for pending work, follow-ups, errors, quotas, and runs.
-- [ ] Build job list/detail and three-contact research workspace.
-- [ ] Build cited angle cards with custom-perspective and research-more actions.
-- [ ] Build draft tabs with counts, copy, regenerate, and manual sent tracking.
-- [ ] Add keyboard focus, labels, contrast, empty/error/loading states.
-- [ ] Run Vitest, ESLint, and production build.
+- [x] Add API types/client and route shell.
+- [x] Build dashboard cards for pending work, follow-ups, errors, quotas, and runs.
+- [x] Build job list/detail and three-contact research workspace.
+- [x] Build cited angle cards with custom-perspective and research-more actions.
+- [x] Build draft controls with counts, copy, regenerate, and manual sent tracking.
+- [x] Add keyboard focus, labels, contrast, empty/error/loading states.
+- [x] Run Vitest, ESLint, and production build.
 
 ## Task 9: Automation, verification, and public release
 
 **Files:** `scripts/cron.example`, `.github/workflows/ci.yml`,
 `docs/OPERATIONS.md`
 
-- [ ] Add a sample cron entry invoking the same `run-daily` command.
-- [ ] Add CI with synthetic fixtures only.
-- [ ] Run backend tests, coverage, Ruff, mypy, frontend tests/lint/build.
-- [ ] Run a secret scan and inspect tracked files for personal/runtime data.
-- [ ] Exercise import → research → angle → draft → state tracking locally with mocks.
+- [x] Add a sample cron entry invoking the same `run-daily` command.
+- [x] Add CI with synthetic fixtures only.
+- [x] Run backend tests, coverage, Ruff, mypy, frontend tests/lint/build.
+- [x] Run a secret scan and inspect tracked files for personal/runtime data.
+- [x] Exercise import → research → angle → draft → state tracking locally with mocks.
 - [ ] Commit verified checkpoints, create the public GitHub repository, and push.
 - [ ] Record the repository URL and exact verification results in the handoff.
 

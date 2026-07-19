@@ -72,4 +72,3 @@ def test_contact_keys_use_email_profile_and_name_company() -> None:
         "profile:https://example.org/people/ada",
         "person:dr ada lovelace:example health",
     ]
-

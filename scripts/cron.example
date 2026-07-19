@@ -1,0 +1,2 @@
+# Run at 08:05 every weekday. Replace REPO with the absolute repository path.
+5 8 * * 1-5 cd REPO && /usr/bin/env uv run job-outreach run-daily >> data/cron.log 2>&1

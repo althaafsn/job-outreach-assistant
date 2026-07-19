@@ -1,7 +1,6 @@
 """Initial local workflow schema."""
 
 from alembic import op
-
 from app.models import Base
 
 revision = "20260718_0001"
@@ -16,4 +15,3 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     Base.metadata.drop_all(op.get_bind())
-

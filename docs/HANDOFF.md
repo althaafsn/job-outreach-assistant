@@ -1,8 +1,8 @@
 # Continuation handoff
 
-## Current objective
+## Delivered objective
 
-Deliver the local, single-user v1 described in `IMPLEMENTATION_PLAN.md`.
+The local, single-user v1 described in `IMPLEMENTATION_PLAN.md` is implemented.
 Deployment to AWS is explicitly outside this milestone.
 
 ## Product boundaries
@@ -20,6 +20,18 @@ This project demonstrates data engineering through ingestion, normalization,
 deduplication, lineage, idempotent pipelines, quotas, and observability. It
 demonstrates AI engineering through evidence-grounded extraction, structured
 generation, schema validation, evaluation fixtures, and human review.
+
+## Verified release baseline
+
+- Backend: 58 tests passed; 82% statement coverage.
+- Static checks: Ruff formatting/checks and strict mypy passed.
+- Frontend: 4 Vitest tests, ESLint, TypeScript, and Vite production build passed.
+- Runtime: schema initialization, server startup, SPA load, health endpoint,
+  manual job import, dashboard, and job detail were exercised against an
+  isolated SQLite database.
+- Privacy: local secret-pattern scan found no credentials; runtime data,
+  `.env`, OAuth files, databases, and build outputs are ignored. CI runs
+  Gitleaks against full Git history.
 
 ## Safe continuation sequence
 

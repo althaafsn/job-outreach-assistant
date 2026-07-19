@@ -60,3 +60,11 @@ def test_daily_quota_is_transactional_and_resets_by_date(tmp_path: Path) -> None
         assert quota_module.used(session, "google_search", day="2026-07-18") == 2
         assert quota_module.reserve(session, "google_search", 2, day="2026-07-19")
 
+
+def test_local_sqlite_parent_directory_is_created(tmp_path: Path) -> None:
+    db_module = _load("app.db")
+    assert db_module is not None
+    database = tmp_path / "nested" / "local.db"
+    engine = db_module.make_engine(f"sqlite:///{database}")
+    db_module.create_schema(engine)
+    assert database.exists()

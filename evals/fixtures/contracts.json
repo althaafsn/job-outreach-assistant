@@ -1,0 +1,23 @@
+[
+  {
+    "name": "grounded_research_angle",
+    "allowed_evidence_ids": [101],
+    "output": {
+      "angles": [
+        {
+          "angle": "Ask about lessons from the public research platform launch.",
+          "question": "What changed after the first researchers began using it?",
+          "evidence_ids": [101]
+        }
+      ]
+    }
+  },
+  {
+    "name": "short_connection_note",
+    "output": {
+      "kind": "connection_note",
+      "subjects": [],
+      "body": "Hi Ada, I was interested in your public research-data training work. I would value hearing what the first users changed about your approach."
+    }
+  }
+]
