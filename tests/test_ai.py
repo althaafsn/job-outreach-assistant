@@ -236,6 +236,57 @@ def test_openrouter_selects_only_allowed_search_results(tmp_path: Path) -> None:
         assert result.value.contacts[0].result_id == 4
 
 
+def test_contact_selection_retries_once_when_a_free_model_returns_none(
+    tmp_path: Path,
+) -> None:
+    ai = _module()
+    assert ai is not None
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        contacts = (
+            [
+                {
+                    "result_id": 99,
+                    "name": "Invented Person",
+                    "title": "Invented role",
+                    "company": "Example University",
+                    "rationale": "This result ID was not supplied and must be discarded.",
+                }
+            ]
+            if len(requests) == 1
+            else [
+                {
+                    "result_id": 4,
+                    "name": "Ada Lovelace",
+                    "title": "Research data professional",
+                    "company": "Example University",
+                    "rationale": "Supports the research data work named in the posting.",
+                }
+            ]
+        )
+        return httpx.Response(
+            200,
+            json={
+                "model": "example/free",
+                "choices": [{"message": {"content": json.dumps({"contacts": contacts})}}],
+            },
+        )
+
+    with _session(tmp_path) as session:
+        client = ai.OpenRouterClient(
+            api_key="test",
+            session=session,
+            transport=httpx.MockTransport(handler),
+            daily_limit=2,
+        )
+        result = client.select_contacts("prompt", allowed_result_ids={4})
+        assert len(requests) == 2
+        assert result.value.contacts[0].name == "Ada Lovelace"
+        assert all(contact.result_id == 4 for contact in result.value.contacts)
+
+
 def test_openrouter_defers_on_429_and_when_daily_quota_is_exhausted(
     tmp_path: Path,
 ) -> None:

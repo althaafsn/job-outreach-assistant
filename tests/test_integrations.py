@@ -168,6 +168,45 @@ def test_public_page_reader_falls_back_when_direct_page_is_a_login_shell() -> No
     ]
 
 
+def test_public_page_reader_falls_back_when_direct_page_is_blocked() -> None:
+    integrations = _module()
+    assert integrations is not None
+    seen: list[str] = []
+
+    def public_dns(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "example.edu":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=(
+                    "<html><main>Sorry for the inconvenience. Your request was blocked "
+                    "because our system detected unusual activity. Reference ID ITSA-123."
+                    "</main></html>"
+                ),
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text=(
+                "# The Team\n\nAshley Smith is Manager of Research Data Services "
+                "and supports Faculty360 at Example University."
+            ),
+        )
+
+    fetcher = SafeFetcher(transport=httpx.MockTransport(handler), resolver=public_dns)
+    assert "Ashley Smith" in integrations.read_public_page(
+        "https://example.edu/team", fetcher=fetcher
+    )
+    assert seen == [
+        "https://example.edu/team",
+        "https://r.jina.ai/https://example.edu/team",
+    ]
+
+
 def test_public_page_reader_rejects_login_shell_returned_by_jina() -> None:
     integrations = _module()
     assert integrations is not None

@@ -89,6 +89,21 @@ def _is_login_shell(text: str) -> bool:
     )
 
 
+def _is_access_shell(text: str) -> bool:
+    normalized = text.casefold()
+    markers = (
+        "request was blocked",
+        "detected unusual activity",
+        "access denied",
+        "verify you are human",
+    )
+    return len(text) < 3_000 and any(marker in normalized for marker in markers)
+
+
+def _is_unusable_shell(text: str) -> bool:
+    return _is_login_shell(text) or _is_access_shell(text)
+
+
 def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
     own_fetcher = fetcher is None
     fetcher = fetcher or SafeFetcher()
@@ -97,11 +112,11 @@ def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
         try:
             raw = fetcher.get_text(url)
             text = _page_text(raw)
-            if _is_login_shell(text):
+            if _is_unusable_shell(text):
                 text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
         except (FetchRejected, httpx.HTTPError):
             text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
-        if _is_login_shell(text):
+        if _is_unusable_shell(text):
             raise FetchRejected("Public page is an authentication or consent shell")
         return text
     finally:

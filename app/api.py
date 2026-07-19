@@ -310,9 +310,14 @@ def _workflow_detail_message(detail: Json) -> str:
         )
     if event == "model":
         return f"Selected {int(detail.get('selected', 0))} relevant people."
+    if event == "candidate":
+        return f"Checking public work for {detail.get('person', 'a candidate')}."
     if event == "contact":
-        action = "Selected" if detail.get("decision") == "accepted" else "Skipped"
+        action = "Kept" if detail.get("decision") == "accepted" else "Skipped"
         return f"{action} {detail.get('person', 'a candidate')}."
+    if event == "candidate_page":
+        action = "Read" if detail.get("decision") == "accepted" else "Skipped"
+        return f"{action} a candidate page."
     if event == "source":
         action = "Kept" if detail.get("decision") == "accepted" else "Skipped"
         return f"{action} a public source for {detail.get('person', 'this person')}."
@@ -829,11 +834,18 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                             emit({"type": "warning", "message": str(exc)})
                     detail = job_detail(job.id, session)
                     has_angles = any(contact["angles"] for contact in detail["contacts"])
+                    has_contacts = bool(detail["contacts"])
                     emit(
                         {
                             "type": "complete",
                             "result": {
-                                "stage": "complete" if has_angles else "people_found",
+                                "stage": (
+                                    "complete"
+                                    if has_angles
+                                    else "people_found"
+                                    if has_contacts
+                                    else "job_verified"
+                                ),
                                 "warnings": warnings,
                                 "job": detail,
                             },

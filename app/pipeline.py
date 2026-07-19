@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.ai import (
@@ -46,9 +46,13 @@ from app.models import (
 )
 from app.research import (
     ContactCandidate,
+    contact_choice_rejection_reason,
+    contact_focus_terms,
     contact_queries,
     evidence_rejection_reason,
+    grounded_contact_title,
     person_research_queries,
+    relevant_excerpt,
     save_evidence,
     save_public_emails,
     save_recommendations,
@@ -342,30 +346,72 @@ def research_job(
             progress(event)
 
     discovered: list[SearchResult] = []
-    seen_urls: set[str] = set()
-    for query in contact_queries(company=job.company, department=department, job_title=job.title):
+    seen_urls: dict[str, int] = {}
+    for query in contact_queries(
+        company=job.company,
+        department=department,
+        job_title=job.title,
+        description=job.description,
+    ):
         results = search.search(query)
         report(event="search", phase="contact_discovery", query=query, results=len(results))
         for result in results:
-            if result.url not in seen_urls:
-                seen_urls.add(result.url)
+            existing_index = seen_urls.get(result.url)
+            if existing_index is None:
+                seen_urls[result.url] = len(discovered)
                 discovered.append(result)
+            else:
+                existing = discovered[existing_index]
+                if len(f"{result.title} {result.snippet}") > len(
+                    f"{existing.title} {existing.snippet}"
+                ):
+                    discovered[existing_index] = result
     numbered = {index: result for index, result in enumerate(discovered, start=1)}
     if not numbered:
         return 0
+    focus_terms = contact_focus_terms(job.description, department)
+    selection_texts: dict[int, str] = {}
+    page_cache: dict[str, str] = {}
+    candidate_page_budget = 8
+    for result_id, result in numbered.items():
+        text = f"{result.title}\n{result.snippet}"
+        host = (urlsplit(result.url).hostname or "").casefold()
+        is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
+        if candidate_page_budget and not is_linkedin:
+            candidate_page_budget -= 1
+            try:
+                page_cache[result.url] = read_page(result.url)
+                text = (
+                    f"{text}\n"
+                    f"{relevant_excerpt(page_cache[result.url], focus_terms)}"
+                )
+                report(
+                    event="candidate_page",
+                    decision="accepted",
+                    url=result.url,
+                )
+            except (FetchRejected, UnsafeURL, httpx.HTTPError) as exc:
+                report(
+                    event="candidate_page",
+                    decision="rejected",
+                    url=result.url,
+                    reason=str(exc),
+                )
+        selection_texts[result_id] = text
     selection = ai.select_contacts(
         build_contact_selection_prompt(
             job={
                 "title": job.title,
                 "company": job.company,
                 "department": department,
+                "description": job.description,
             },
             results=[
                 {
                     "id": result_id,
                     "title": result.title,
                     "url": result.url,
-                    "snippet": result.snippet,
+                    "snippet": selection_texts[result_id],
                 }
                 for result_id, result in numbered.items()
             ],
@@ -381,7 +427,7 @@ def research_job(
     candidates: list[ContactCandidate] = []
     for rank, choice in enumerate(selection.value.contacts, start=1):
         source = numbered[choice.result_id]
-        source_text = normalize_text(f"{source.title} {source.snippet}")
+        source_text = normalize_text(selection_texts[choice.result_id])
         if normalize_text(choice.name) not in source_text:
             report(
                 event="contact",
@@ -390,18 +436,38 @@ def research_job(
                 reason="Selected name is not grounded in the search result",
             )
             continue
-        if normalize_text(choice.title) not in source_text:
+        grounded_title = grounded_contact_title(
+            name=choice.name,
+            proposed=choice.title,
+            source_text=selection_texts[choice.result_id],
+        )
+        if grounded_title is None:
             report(
                 event="contact",
                 decision="rejected",
                 person=choice.name,
+                title=choice.title,
                 reason="Selected title is not grounded in the search result",
+            )
+            continue
+        relevance_reason = contact_choice_rejection_reason(
+            name=choice.name,
+            title=grounded_title,
+            source_text=selection_texts[choice.result_id],
+            focus_terms=focus_terms,
+        )
+        if relevance_reason:
+            report(
+                event="contact",
+                decision="rejected",
+                person=choice.name,
+                reason=relevance_reason,
             )
             continue
         candidates.append(
             ContactCandidate(
                 name=choice.name,
-                title=choice.title,
+                title=grounded_title,
                 company=job.company,
                 profile_url=source.url,
                 score=float(101 - rank),
@@ -409,10 +475,10 @@ def research_job(
             )
         )
         report(
-            event="contact",
+            event="candidate",
             decision="accepted",
             person=choice.name,
-            title=choice.title,
+            title=grounded_title,
             url=source.url,
         )
     ids = save_recommendations(session, job, candidates)
@@ -446,7 +512,7 @@ def research_job(
                     )
                     continue
                 try:
-                    page_text = read_page(result.url)
+                    page_text = page_cache.get(result.url) or read_page(result.url)
                 except (FetchRejected, UnsafeURL, httpx.HTTPError) as exc:
                     report(
                         event="source",
@@ -456,11 +522,15 @@ def research_job(
                         reason=str(exc),
                     )
                     continue
-                combined = f"{result.title}\n{result.snippet}\n{page_text}"
+                combined = (
+                    f"{result.title}\n{result.snippet}\n"
+                    f"{relevant_excerpt(page_text, [contact.name, contact.company])}"
+                )
                 reason = evidence_rejection_reason(
                     combined,
                     person_name=contact.name,
                     source_url=result.url,
+                    organization=contact.company,
                 )
                 if reason:
                     report(
@@ -495,7 +565,42 @@ def research_job(
                     text=combined,
                     source_url=result.url,
                 )
-    return len(ids)
+        has_evidence = session.scalar(
+            select(ContactEvidence.id)
+            .where(ContactEvidence.contact_id == contact.id)
+            .limit(1)
+        )
+        if has_evidence is None:
+            session.execute(
+                delete(JobContact).where(
+                    JobContact.job_id == job.id,
+                    JobContact.contact_id == contact.id,
+                    JobContact.status == "suggested",
+                )
+            )
+            session.commit()
+            report(
+                event="contact",
+                decision="rejected",
+                person=contact.name,
+                reason="No public source confirmed this person and organization",
+            )
+        else:
+            report(
+                event="contact",
+                decision="accepted",
+                person=contact.name,
+                title=contact.title,
+                url=contact.profile_url,
+            )
+    return len(
+        session.scalars(
+            select(JobContact).where(
+                JobContact.job_id == job.id,
+                JobContact.contact_id.in_(ids),
+            )
+        ).all()
+    )
 
 
 def generate_angles(

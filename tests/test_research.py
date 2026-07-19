@@ -197,18 +197,139 @@ def test_evidence_accepts_substantive_named_public_work(tmp_path: Path) -> None:
         assert evidence.title == "Ada Lovelace leads the Open Records Project"
 
 
+def test_evidence_can_require_the_selected_organization() -> None:
+    research = _module()
+    assert research is not None
+    unrelated = (
+        "Jenny Mackay is a researcher at Nottingham Trent University. Her public "
+        "work examines social policy, program evaluation, and community services. "
+        "She publishes reports and collaborates with research partners in England."
+    )
+    official = (
+        "Jenny Mackay is Human Resources Manager at the University of British "
+        "Columbia. She supports recruitment, employee relations, and organizational "
+        "planning for teams across UBC."
+    )
+    assert (
+        research.evidence_rejection_reason(
+            unrelated,
+            person_name="Jenny Mackay",
+            source_url="https://ntu.ac.uk/staff/jenny-mackay",
+            organization="University of British Columbia",
+        )
+        == "Page does not confirm the selected organization"
+    )
+    assert (
+        research.evidence_rejection_reason(
+            official,
+            person_name="Jenny Mackay",
+            source_url="https://hr.ubc.ca/jenny-mackay",
+            organization="University of British Columbia",
+        )
+        is None
+    )
+
+
+def test_contact_choice_requires_a_full_name_and_job_context() -> None:
+    research = _module()
+    assert research is not None
+    context = ["Research Data Services", "Faculty360"]
+    assert (
+        research.contact_choice_rejection_reason(
+            name="Kate L.",
+            title="Program Manager",
+            source_text="Kate L. is a Program Manager at Example University.",
+            focus_terms=context,
+        )
+        == "Selected person does not have a sufficiently specific public name"
+    )
+    assert (
+        research.contact_choice_rejection_reason(
+            name="Angela Lam",
+            title="Senior Manager",
+            source_text="Angela Lam is a Senior Manager in an unrelated arts unit.",
+            focus_terms=context,
+        )
+        == "Selected role is not tied to the job's unit or platform"
+    )
+    assert (
+        research.contact_choice_rejection_reason(
+            name="Ada Lovelace",
+            title="Manager of Research Data Services",
+            source_text=(
+                "Ada Lovelace is Manager of Research Data Services and supports Faculty360."
+            ),
+            focus_terms=context,
+        )
+        is None
+    )
+
+
+def test_grounded_contact_title_falls_back_to_a_public_role_phrase() -> None:
+    research = _module()
+    assert research is not None
+    source = (
+        "Ashley McKerrow. Ashley is an experienced data management professional "
+        "with over twelve years of experience supporting health research."
+    )
+    assert (
+        research.grounded_contact_title(
+            name="Ashley McKerrow",
+            proposed="Manager, Research Data Services",
+            source_text=source,
+        )
+        == "Experienced data management professional"
+    )
+    assert (
+        research.grounded_contact_title(
+            name="Ada Lovelace",
+            proposed="Manager, Research Data Services",
+            source_text="Ada Lovelace - Manager, Research Data Services at Example University.",
+        )
+        == "Manager, Research Data Services"
+    )
+    assert (
+        research.grounded_contact_title(
+            name="Ada Lovelace",
+            proposed="Vice President of AI",
+            source_text="Ada Lovelace manages research data services.",
+        )
+        is None
+    )
+
+
+def test_relevant_excerpt_keeps_context_buried_in_a_long_team_page() -> None:
+    research = _module()
+    assert research is not None
+    text = ("General organization information and navigation. " * 120) + (
+        "Ashley McKerrow is an experienced data management professional who leads "
+        "full Research Data Services, including training, platform validation, and "
+        "documentation for health research teams."
+    )
+    excerpt = research.relevant_excerpt(text, ["Research Data Services"])
+    assert "Ashley McKerrow" in excerpt
+    assert "platform validation" in excerpt
+    assert len(excerpt) <= 3_000
+
+
 def test_builds_bounded_public_search_queries() -> None:
     research = _module()
     assert research is not None
     queries = research.contact_queries(
-        company="Example University",
-        department="Research Data Services",
+        company="University of British Columbia",
+        department="",
         job_title="Junior Data Coordinator",
+        description=(
+            "The role supports Faculty360 for the Faculty of Medicine. "
+            "Reporting to the Manager, Research Data Services, the coordinator "
+            "maintains research platforms."
+        ),
     )
-    assert 1 <= len(queries) <= 3
+    assert len(queries) == 3
     assert all(len(query) <= 180 for query in queries)
-    assert all("Example University" in query for query in queries)
-    assert sum("site:linkedin.com/in" in query for query in queries) == 2
+    assert any("UBC" in query for query in queries)
+    assert any("Faculty360" in query and "Research Data Services" in query for query in queries)
+    assert sum("site:linkedin.com/in" in query for query in queries) == 1
     assert any("-site:linkedin.com" in query for query in queries)
 
 

@@ -246,7 +246,7 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
                     {
                         "contacts": [
                             {
-                                "result_id": min(allowed_result_ids),
+                                "result_id": 3,
                                 "name": "Ada Lovelace",
                                 "title": "Manager, Research Data Services",
                                 "company": "Example University",
@@ -268,18 +268,21 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
         ),
         "https://example.org/interviews/ada": (
             "In this public interview, Ada Lovelace discusses research data stewardship. "
+            "Lovelace is the Research Data Services manager at Example University. "
             "She describes lessons from training researchers, introducing validation "
             "checks, and designing secure workflows that remain practical for users. "
             "The discussion focuses on how feedback changed the team's approach."
         ),
         "https://conference.example.edu/speakers/ada": (
             "Ada Lovelace presents practical data validation methods for research teams. "
+            "The conference lists her affiliation as Example University. "
             "Her talk explains how small automated checks can expose inconsistent "
             "records before they enter shared repositories, and how clear documentation "
             "helps nontechnical collaborators resolve the underlying issues."
         ),
         "https://events.example.org/reproducible-research": (
             "Ada Lovelace joins a public panel on reproducible research and open data. "
+            "The event program identifies her with Example University. "
             "The speakers compare approaches to audit trails, versioned datasets, "
             "privacy reviews, and documentation that enables other teams to reproduce "
             "published findings without repeating the original extraction work."
@@ -396,6 +399,77 @@ def test_contact_research_rejects_an_ungrounded_title(tmp_path: Path) -> None:
             and event.get("reason") == "Selected title is not grounded in the search result"
             for event in progress
         )
+
+
+def test_contact_selection_can_use_a_bounded_public_team_page(tmp_path: Path) -> None:
+    pipeline = _module()
+    assert pipeline is not None
+    factory = _factory(tmp_path)
+    from app.ai import ContactSelection, Generated
+
+    team_url = "https://example.edu/research-data/team"
+    team_page = (
+        "Research Data Services team. Ada Lovelace is the Manager of Research Data "
+        "Services at Example University. Ada has twelve years of experience building "
+        "health-research databases, training research staff, and introducing validation "
+        "workflows for sensitive records. Her team supports the Faculty360 platform."
+    )
+
+    class Search:
+        def search(self, _query: str) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="The Team | Research Data Services",
+                    url=team_url,
+                    snippet="Meet the research technology team.",
+                )
+            ]
+
+    class AI:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        def select_contacts(self, prompt: str, *, allowed_result_ids: set[int]):
+            self.prompt = prompt
+            return Generated(
+                value=ContactSelection.model_validate(
+                    {
+                        "contacts": [
+                            {
+                                "result_id": min(allowed_result_ids),
+                                "name": "Ada Lovelace",
+                                "title": "Manager of Research Data Services",
+                                "company": "Example University",
+                                "rationale": "Manages the team and platform named by the job.",
+                            }
+                        ]
+                    }
+                ),
+                model="example/free",
+            )
+
+    reads: list[str] = []
+
+    def read_page(url: str) -> str:
+        reads.append(url)
+        return team_page
+
+    ai = AI()
+    with factory() as session:
+        job = upsert_job(
+            session,
+            JobInput(
+                title="Junior Data Coordinator",
+                company="Example University",
+                description=(
+                    "Support Faculty360. Reporting to the Manager, Research Data Services."
+                ),
+            ),
+        )
+        assert pipeline.research_job(session, job, Search(), ai, read_page=read_page) == 1
+        assert "Ada Lovelace" in ai.prompt
+        assert "Manager of Research Data Services" in ai.prompt
+        assert reads.count(team_url) == 1
 
 
 def _job_body() -> str:
