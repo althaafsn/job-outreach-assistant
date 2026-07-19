@@ -7,7 +7,9 @@ import pytest
 from sqlalchemy import select
 
 from app.db import create_schema, make_engine, make_session_factory
-from app.models import IngestMessage, Job, PipelineRun
+from app.ingest import JobInput, upsert_job
+from app.integrations import SearchResult
+from app.models import ContactEmail, ContactEvidence, IngestMessage, Job, PipelineRun
 
 
 def _module():
@@ -65,7 +67,7 @@ def test_daily_run_records_quota_deferral_without_losing_progress(tmp_path: Path
     factory = _factory(tmp_path)
 
     def deferred(_session):
-        raise pipeline.DeferredIntegration("Daily Google search budget is exhausted")
+        raise pipeline.DeferredIntegration("Daily Brave search budget is exhausted")
 
     with pytest.raises(pipeline.DeferredIntegration):
         pipeline.run_steps(
@@ -124,3 +126,47 @@ def test_gmail_ingest_keeps_metadata_not_full_message_body(tmp_path: Path) -> No
         assert job is not None
         assert job.canonical_url == "https://linkedin.com/jobs/view/123"
         assert "PRIVATE BODY" not in job.description
+
+
+def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
+    pipeline = _module()
+    assert pipeline is not None
+    factory = _factory(tmp_path)
+
+    class Search:
+        def search(self, _query: str) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="Ada Lovelace - Manager, Research Data Services",
+                    url="https://example.edu/people/ada",
+                    snippet="Short search snippet.",
+                )
+            ]
+
+    with factory() as session:
+        job = upsert_job(
+            session,
+            JobInput(
+                title="Junior Data Coordinator",
+                company="Example University",
+                description="Support research data services.",
+            ),
+        )
+        assert (
+            pipeline.research_job(
+                session,
+                job,
+                Search(),
+                read_page=lambda _url: (
+                    "Ada leads a public research data training program. "
+                    "Contact ada@example.edu."
+                ),
+            )
+            == 1
+        )
+        evidence = session.scalar(select(ContactEvidence))
+        assert evidence is not None
+        assert "training program" in evidence.excerpt
+        email = session.scalar(select(ContactEmail))
+        assert email is not None
+        assert email.email == "ada@example.edu"

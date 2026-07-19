@@ -39,14 +39,13 @@ def test_doctor_reports_missing_optional_integrations_without_exposing_values() 
     class Settings:
         database_url = "sqlite:///:memory:"
         openrouter_api_key = ""
-        google_api_key = ""
-        google_search_engine_id = ""
+        brave_api_key = ""
         gmail_credentials_file = __import__("pathlib").Path("/missing/client.json")
         gmail_token_file = __import__("pathlib").Path("/missing/token.json")
 
     result = cli.doctor_report(Settings())
     assert result["database"] == "ok"
     assert result["openrouter"] == "not configured"
-    assert result["google_search"] == "not configured"
+    assert result["brave_search"] == "not configured"
     assert result["gmail"] == "not authorized"
     assert "sqlite" not in str(result).casefold()

@@ -11,12 +11,12 @@ evidence, drafts short outreach for manual sending, and tracks the workflow.
 
 **Architecture:** A FastAPI application owns an idempotent SQLite pipeline and
 serves a React single-page client. Deterministic parsing runs before optional
-Google/Gmail/OpenRouter integrations. All external text is untrusted, AI output
+Brave/Gmail/OpenRouter integrations. All external text is untrusted, AI output
 is schema-validated, and no outreach is sent automatically.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2, Alembic, SQLite, Pydantic 2,
-httpx, BeautifulSoup, Google Gmail/Custom Search APIs, OpenRouter free router,
-React 19, TypeScript, Vite, Vitest, and plain CSS.
+httpx, BeautifulSoup, Google Gmail API, Brave Search API, Jina Reader fallback,
+OpenRouter free router, React 19, TypeScript, Vite, Vitest, and plain CSS.
 
 ## Global constraints
 
@@ -25,7 +25,7 @@ React 19, TypeScript, Vite, Vitest, and plain CSS.
 - Local single-user v1 binds to `127.0.0.1`; AWS deployment is deferred.
 - Keep credentials and data separate from every other project.
 - Default OpenRouter model: `openrouter/free`; maximum 25 application requests/day.
-- Default Google Custom Search budget: 80 queries/day, below the free 100/day quota.
+- Default Brave Search budget: 30 queries/day, below 1,000 monthly searches.
 - Gmail permission is read-only: `https://www.googleapis.com/auth/gmail.readonly`.
 - No direct or authenticated LinkedIn scraping and no automated sending.
 - Store only short public professional evidence excerpts and source URLs.

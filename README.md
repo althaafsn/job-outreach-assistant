@@ -34,8 +34,8 @@ Open <http://127.0.0.1:8000>. During frontend development, run
 - Gmail: create a separate Google Desktop OAuth client with the read-only
   `gmail.readonly` scope, save its downloaded JSON at the configured
   `GMAIL_CREDENTIALS_FILE`, then run `uv run job-outreach gmail-auth`.
-- Google search: configure a Programmable Search Engine and set
-  `GOOGLE_API_KEY` plus `GOOGLE_SEARCH_ENGINE_ID`.
+- Brave Search: create a Search API key and set `BRAVE_API_KEY`. The application
+  reads public pages directly and uses Jina Reader only when direct retrieval fails.
 - OpenRouter: set `OPENROUTER_API_KEY`. The default router is
   `openrouter/free`; the application validates model output and records the
   actual model returned.

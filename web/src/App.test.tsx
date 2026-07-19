@@ -38,7 +38,7 @@ beforeEach(() => {
             ? { items: [] }
             : {
                 openrouter_configured: false,
-                google_search_configured: false,
+                brave_search_configured: false,
                 gmail_authorized: false,
               };
       return new Response(JSON.stringify(payload), {
@@ -73,6 +73,8 @@ test("opens the job workspace and exposes manual import", async () => {
 test("settings exposes export and guarded deletion controls", async () => {
   render(<App />);
   await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(await screen.findByText("Brave Search")).toBeInTheDocument();
+  expect(screen.getByText(/BRAVE_API_KEY/)).toBeInTheDocument();
   expect(await screen.findByRole("link", { name: "Export JSON" })).toHaveAttribute(
     "href",
     "/api/export",
@@ -123,7 +125,7 @@ test("records a reviewed draft as manually sent without sending it", async () =>
                 ? { items: [] }
                 : {
                     openrouter_configured: false,
-                    google_search_configured: false,
+                    brave_search_configured: false,
                     gmail_authorized: false,
                   };
       return new Response(JSON.stringify(payload), {

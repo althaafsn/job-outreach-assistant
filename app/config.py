@@ -16,11 +16,10 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "openrouter/free"
     openrouter_daily_request_limit: int = 25
-    google_api_key: str = ""
-    google_search_engine_id: str = ""
-    google_daily_query_limit: int = 80
+    brave_api_key: str = ""
+    brave_daily_query_limit: int = 30
     target_job_queries: str = "junior data engineer|junior software developer|data analyst"
-    target_location: str = "Vancouver BC"
+    target_location: str = "Canada"
     research_department: str = ""
     gmail_credentials_file: Path = Path("./secrets/gmail_credentials.json")
     gmail_token_file: Path = Path("./secrets/gmail_token.json")

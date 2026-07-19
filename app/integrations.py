@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from sqlalchemy.orm import Session
 
 from app.quotas import reserve
+from app.security import FetchRejected, SafeFetcher, validate_public_url
 
 GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 
@@ -27,53 +29,74 @@ class SearchResult:
     snippet: str
 
 
-class GoogleSearchClient:
+def _plain(value: object, limit: int) -> str:
+    return BeautifulSoup(str(value or ""), "html.parser").get_text(" ", strip=True)[:limit]
+
+
+class BraveSearchClient:
     def __init__(
         self,
         *,
         api_key: str,
-        engine_id: str,
         session: Session,
-        daily_limit: int = 80,
+        daily_limit: int = 30,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_key = api_key
-        self.engine_id = engine_id
         self.session = session
         self.daily_limit = daily_limit
         self.client = httpx.Client(
-            base_url="https://customsearch.googleapis.com",
+            base_url="https://api.search.brave.com",
             transport=transport,
             timeout=20,
+            headers={"X-Subscription-Token": api_key},
         )
 
-    def search(self, query: str, *, start: int = 1) -> list[SearchResult]:
-        if not self.api_key or not self.engine_id:
-            raise DeferredIntegration("Google Custom Search is not configured")
-        if not reserve(self.session, "google_search", self.daily_limit):
-            raise DeferredIntegration("Daily Google search budget is exhausted")
+    def search(self, query: str, *, start: int = 0) -> list[SearchResult]:
+        if not self.api_key:
+            raise DeferredIntegration("Brave Search is not configured")
+        if not reserve(self.session, "brave_search", self.daily_limit):
+            raise DeferredIntegration("Daily Brave search budget is exhausted")
         response = self.client.get(
-            "/customsearch/v1",
+            "/res/v1/web/search",
             params={
-                "key": self.api_key,
-                "cx": self.engine_id,
                 "q": query[:180],
-                "start": max(1, min(start, 91)),
-                "num": 10,
+                "offset": max(0, min(start, 9)),
+                "count": 10,
+                "country": "ca",
+                "search_lang": "en",
             },
         )
-        if response.status_code in {403, 429}:
-            raise DeferredIntegration("Google search quota or rate limit reached")
+        if response.status_code in {401, 402, 403, 429}:
+            raise DeferredIntegration("Brave search quota, credentials, or rate limit reached")
         response.raise_for_status()
         return [
             SearchResult(
-                title=str(item.get("title", ""))[:500],
-                url=str(item.get("link", ""))[:1000],
-                snippet=str(item.get("snippet", ""))[:1000],
+                title=_plain(item.get("title", ""), 500),
+                url=str(item.get("url", ""))[:1000],
+                snippet=_plain(item.get("description", ""), 1000),
             )
-            for item in response.json().get("items", [])
-            if item.get("link")
+            for item in response.json().get("web", {}).get("results", [])
+            if item.get("url")
         ]
+
+
+def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
+    own_fetcher = fetcher is None
+    fetcher = fetcher or SafeFetcher()
+    try:
+        validate_public_url(url, resolver=fetcher.resolver)
+        try:
+            raw = fetcher.get_text(url)
+        except (FetchRejected, httpx.HTTPError):
+            raw = fetcher.get_text(f"https://r.jina.ai/{url}")
+        soup = BeautifulSoup(raw, "html.parser")
+        for element in soup(["script", "style"]):
+            element.decompose()
+        return soup.get_text(" ", strip=True)[:50_000]
+    finally:
+        if own_fetcher:
+            fetcher.close()
 
 
 def gmail_credentials(

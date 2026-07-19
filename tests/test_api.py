@@ -124,8 +124,7 @@ def test_optional_ai_and_search_actions_explain_missing_configuration(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_SEARCH_ENGINE_ID", raising=False)
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     from app.config import get_settings
 
     get_settings.cache_clear()
@@ -138,7 +137,7 @@ def test_optional_ai_and_search_actions_explain_missing_configuration(
             assert client.post(f"/api/jobs/{job_id}/research").status_code == 409
             settings = client.get("/api/settings").json()
             assert settings["openrouter_configured"] is False
-            assert settings["google_search_configured"] is False
+            assert settings["brave_search_configured"] is False
     finally:
         get_settings.cache_clear()
 

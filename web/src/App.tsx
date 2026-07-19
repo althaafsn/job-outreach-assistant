@@ -74,11 +74,11 @@ type Dashboard = {
 
 type Settings = {
   openrouter_configured: boolean;
-  google_search_configured: boolean;
+  brave_search_configured: boolean;
   gmail_authorized: boolean;
   openrouter_model?: string;
   openrouter_daily_limit?: number;
-  google_daily_limit?: number;
+  brave_daily_limit?: number;
   target_job_queries?: string[];
   target_location?: string;
 };
@@ -114,7 +114,7 @@ function App() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [settings, setSettings] = useState<Settings>({
     openrouter_configured: false,
-    google_search_configured: false,
+    brave_search_configured: false,
     gmail_authorized: false,
   });
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -511,14 +511,14 @@ function JobDetailView({
             </div>
             <button
               className="secondary"
-              disabled={busy === "research" || !settings.google_search_configured}
+              disabled={busy === "research" || !settings.brave_search_configured}
               onClick={() => void run("research")}
             >
               {busy === "research" ? "Researching…" : job.contacts?.length ? "Research more" : "Find contacts"}
             </button>
           </div>
-          {!settings.google_search_configured && (
-            <SetupHint text="Add Google Custom Search credentials in .env to discover public profiles." />
+          {!settings.brave_search_configured && (
+            <SetupHint text="Add BRAVE_API_KEY in .env to discover public profiles." />
           )}
           {job.contacts?.length ? (
             job.contacts.map((contact) => (
@@ -805,7 +805,7 @@ function SettingsView({
   const [deleting, setDeleting] = useState(false);
   const integrations = [
     ["Gmail read-only", settings.gmail_authorized, "uv run job-outreach gmail-auth"],
-    ["Google Custom Search", settings.google_search_configured, "GOOGLE_API_KEY + GOOGLE_SEARCH_ENGINE_ID"],
+    ["Brave Search", settings.brave_search_configured, "BRAVE_API_KEY"],
     ["OpenRouter", settings.openrouter_configured, "OPENROUTER_API_KEY"],
   ] as const;
   const deleteData = async () => {

@@ -25,7 +25,7 @@ from app.config import get_settings
 from app.db import engine as default_engine
 from app.db import make_session_factory
 from app.ingest import parse_job_text, upsert_job
-from app.integrations import DeferredIntegration, GoogleSearchClient
+from app.integrations import BraveSearchClient, DeferredIntegration
 from app.models import (
     AngleEvidence,
     Contact,
@@ -169,13 +169,11 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         settings = get_settings()
         return {
             "openrouter_configured": bool(settings.openrouter_api_key),
-            "google_search_configured": bool(
-                settings.google_api_key and settings.google_search_engine_id
-            ),
+            "brave_search_configured": bool(settings.brave_api_key),
             "gmail_authorized": settings.gmail_token_file.exists(),
             "openrouter_model": settings.openrouter_model,
             "openrouter_daily_limit": settings.openrouter_daily_request_limit,
-            "google_daily_limit": settings.google_daily_query_limit,
+            "brave_daily_limit": settings.brave_daily_query_limit,
             "target_job_queries": settings.target_job_queries.split("|"),
             "target_location": settings.target_location,
         }
@@ -359,20 +357,19 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
     @app.post("/api/jobs/{job_id}/research")
     def research_contacts(job_id: int, session: Session = Depends(db)) -> Json:
         settings = get_settings()
-        if not settings.google_api_key or not settings.google_search_engine_id:
+        if not settings.brave_api_key:
             raise HTTPException(
                 status_code=409,
-                detail="Google Custom Search is not configured. Add the two keys to .env.",
+                detail="Brave Search is not configured. Add BRAVE_API_KEY to .env.",
             )
         try:
             count = research_job(
                 session,
                 require_job(job_id, session),
-                GoogleSearchClient(
-                    api_key=settings.google_api_key,
-                    engine_id=settings.google_search_engine_id,
+                BraveSearchClient(
+                    api_key=settings.brave_api_key,
                     session=session,
-                    daily_limit=settings.google_daily_query_limit,
+                    daily_limit=settings.brave_daily_query_limit,
                 ),
                 department=settings.research_department,
             )

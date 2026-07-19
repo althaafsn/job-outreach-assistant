@@ -28,11 +28,12 @@ The only requested scope is `gmail.readonly`. Full message bodies are parsed in
 memory and discarded; the database keeps message ID, subject, received time,
 processing status, extracted job fields, and source lineage.
 
-### Google Custom Search
+### Brave Search
 
-Create a Programmable Search Engine, then set `GOOGLE_API_KEY` and
-`GOOGLE_SEARCH_ENGINE_ID`. The application budget defaults to 80 queries/day,
-below Google's 100-query free daily allowance.
+Create a Brave Search API key, then set `BRAVE_API_KEY`. The application budget
+defaults to 30 queries/day, below 1,000 searches per month. Public pages are
+fetched directly first; Jina Reader is used only when direct retrieval fails
+and requires no separate configuration.
 
 ### OpenRouter
 

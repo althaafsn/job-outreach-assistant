@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import httpx
 import pytest
 
 from app.db import create_schema, make_engine, make_session_factory
+from app.security import SafeFetcher
 
 
 def _module():
@@ -23,7 +25,7 @@ def _session(tmp_path: Path):
     return make_session_factory(engine)()
 
 
-def test_google_search_uses_quota_and_returns_small_public_result_shape(
+def test_brave_search_uses_quota_and_returns_small_public_result_shape(
     tmp_path: Path,
 ) -> None:
     integrations = _module()
@@ -35,21 +37,25 @@ def test_google_search_uses_quota_and_returns_small_public_result_shape(
         return httpx.Response(
             200,
             json={
-                "items": [
-                    {
-                        "title": "Ada Lovelace - Research Data Manager",
-                        "link": "https://example.edu/people/ada",
-                        "snippet": "Ada leads research data services at Example University.",
-                        "pagemap": {"ignored": ["large"]},
-                    }
-                ]
+                "web": {
+                    "results": [
+                        {
+                            "title": "<strong>Ada</strong> Lovelace - Research Data Manager",
+                            "url": "https://example.edu/people/ada",
+                            "description": (
+                                "<strong>Ada</strong> leads research data services "
+                                "at Example University."
+                            ),
+                            "profile": {"ignored": ["large"]},
+                        }
+                    ]
+                }
             },
         )
 
     with _session(tmp_path) as session:
-        client = integrations.GoogleSearchClient(
+        client = integrations.BraveSearchClient(
             api_key="key",
-            engine_id="cx",
             session=session,
             daily_limit=1,
             transport=httpx.MockTransport(handler),
@@ -63,17 +69,72 @@ def test_google_search_uses_quota_and_returns_small_public_result_shape(
             )
         ]
         assert "q=" in str(seen[0].url)
+        assert seen[0].headers["x-subscription-token"] == "key"
         with pytest.raises(integrations.DeferredIntegration):
             client.search("another query")
 
 
-def test_google_search_requires_its_own_credentials(tmp_path: Path) -> None:
+def test_brave_search_requires_its_own_credentials(tmp_path: Path) -> None:
     integrations = _module()
     assert integrations is not None
     with _session(tmp_path) as session:
-        client = integrations.GoogleSearchClient(api_key="", engine_id="", session=session)
+        client = integrations.BraveSearchClient(api_key="", session=session)
         with pytest.raises(integrations.DeferredIntegration):
             client.search("query")
+
+
+def test_public_page_reader_uses_direct_page_without_jina() -> None:
+    integrations = _module()
+    assert integrations is not None
+    seen: list[str] = []
+
+    def public_dns(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=(
+                "<html><nav>Menu</nav>"
+                "<main>Ada leads public research data services.</main></html>"
+            ),
+        )
+
+    fetcher = SafeFetcher(transport=httpx.MockTransport(handler), resolver=public_dns)
+    assert integrations.read_public_page("https://example.edu/ada", fetcher=fetcher) == (
+        "Menu Ada leads public research data services."
+    )
+    assert seen == ["https://example.edu/ada"]
+
+
+def test_public_page_reader_falls_back_to_jina_after_direct_failure() -> None:
+    integrations = _module()
+    assert integrations is not None
+    seen: list[str] = []
+
+    def public_dns(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "example.edu":
+            return httpx.Response(403, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="# Ada Lovelace\n\nAda leads public research data services.",
+        )
+
+    fetcher = SafeFetcher(transport=httpx.MockTransport(handler), resolver=public_dns)
+    assert "Ada leads public research" in integrations.read_public_page(
+        "https://example.edu/ada", fetcher=fetcher
+    )
+    assert seen == [
+        "https://example.edu/ada",
+        "https://r.jina.ai/https://example.edu/ada",
+    ]
 
 
 def test_gmail_reader_paginates_and_requests_raw_messages_only() -> None:

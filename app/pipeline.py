@@ -9,16 +9,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.ai import DeferredAI, OpenRouterClient, build_angle_prompt
 from app.ingest import JobInput, parse_gmail_raw, record_ingest_message, upsert_job
 from app.integrations import (
+    BraveSearchClient,
     DeferredIntegration,
-    GoogleSearchClient,
     SearchResult,
     iter_gmail_raw,
+    read_public_page,
 )
 from app.models import (
     AngleEvidence,
@@ -37,6 +39,7 @@ from app.research import (
     save_public_emails,
     save_recommendations,
 )
+from app.security import FetchRejected, UnsafeURL
 
 
 class AlreadyRunning(RuntimeError):
@@ -145,7 +148,7 @@ def ingest_gmail(session: Session, service: Any, *, query: str) -> int:
 
 def backfill_jobs(
     session: Session,
-    search: GoogleSearchClient,
+    search: BraveSearchClient,
     *,
     query: str,
     months: int = 6,
@@ -162,7 +165,7 @@ def backfill_jobs(
                 company=(company.split("|")[0].strip() or "Needs review")[:300],
                 description=result.snippet,
                 url=result.url,
-                source="google",
+                source="brave",
                 external_id=result.url,
             ),
         )
@@ -185,9 +188,10 @@ def _candidate(result: SearchResult, company: str) -> ContactCandidate | None:
 def research_job(
     session: Session,
     job: Job,
-    search: GoogleSearchClient,
+    search: BraveSearchClient,
     *,
     department: str = "",
+    read_page: Callable[[str], str] = read_public_page,
 ) -> int:
     candidates: list[ContactCandidate] = []
     sources: dict[str, SearchResult] = {}
@@ -208,18 +212,23 @@ def research_job(
         source_result = sources.get(candidate.profile_url or "")
         contact = session.get(Contact, contact_id)
         if source_result and source_result.snippet and contact:
+            page_text = source_result.snippet
+            try:
+                page_text = read_page(source_result.url) or page_text
+            except (FetchRejected, UnsafeURL, httpx.HTTPError):
+                pass
             save_evidence(
                 session,
                 contact,
                 title=source_result.title,
                 source_url=source_result.url,
-                excerpt=source_result.snippet,
+                excerpt=page_text,
                 kind="public_third_party",
             )
             save_public_emails(
                 session,
                 contact,
-                text=f"{source_result.title}\n{source_result.snippet}",
+                text=f"{source_result.title}\n{page_text}",
                 source_url=source_result.url,
             )
     return len(ids)

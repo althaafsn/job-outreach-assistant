@@ -14,8 +14,8 @@ from app.config import Settings, get_settings
 from app.db import create_schema, make_engine, make_session_factory
 from app.ingest import parse_job_text, upsert_job
 from app.integrations import (
+    BraveSearchClient,
     DeferredIntegration,
-    GoogleSearchClient,
     gmail_service,
 )
 from app.models import Contact, ContactEvidence, Draft, Job, JobContact, ResearchAngle
@@ -68,9 +68,7 @@ def doctor_report(settings: Any) -> dict[str, str]:
     return {
         "database": database,
         "openrouter": "configured" if settings.openrouter_api_key else "not configured",
-        "google_search": "configured"
-        if settings.google_api_key and settings.google_search_engine_id
-        else "not configured",
+        "brave_search": "configured" if settings.brave_api_key else "not configured",
         "gmail": "authorized" if settings.gmail_token_file.exists() else "not authorized",
     }
 
@@ -81,12 +79,11 @@ def _runtime(settings: Settings) -> sessionmaker[Session]:
     return make_session_factory(engine)
 
 
-def _search(settings: Settings, session: Session) -> GoogleSearchClient:
-    return GoogleSearchClient(
-        api_key=settings.google_api_key,
-        engine_id=settings.google_search_engine_id,
+def _search(settings: Settings, session: Session) -> BraveSearchClient:
+    return BraveSearchClient(
+        api_key=settings.brave_api_key,
         session=session,
-        daily_limit=settings.google_daily_query_limit,
+        daily_limit=settings.brave_daily_query_limit,
     )
 
 
@@ -279,7 +276,7 @@ def main(argv: list[str] | None = None) -> None:
                         lambda db: ingest_gmail(db, service, query=settings.gmail_query),
                     )
                 )
-            if settings.google_api_key and settings.google_search_engine_id:
+            if settings.brave_api_key:
                 for index, query in enumerate(settings.target_job_queries.split("|")):
                     steps.append(
                         (

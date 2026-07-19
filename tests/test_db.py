@@ -54,11 +54,11 @@ def test_daily_quota_is_transactional_and_resets_by_date(tmp_path: Path) -> None
     db_module.create_schema(engine)
     session_factory = db_module.make_session_factory(engine)
     with session_factory() as session:
-        assert quota_module.reserve(session, "google_search", 2, day="2026-07-18")
-        assert quota_module.reserve(session, "google_search", 2, day="2026-07-18")
-        assert not quota_module.reserve(session, "google_search", 2, day="2026-07-18")
-        assert quota_module.used(session, "google_search", day="2026-07-18") == 2
-        assert quota_module.reserve(session, "google_search", 2, day="2026-07-19")
+        assert quota_module.reserve(session, "brave_search", 2, day="2026-07-18")
+        assert quota_module.reserve(session, "brave_search", 2, day="2026-07-18")
+        assert not quota_module.reserve(session, "brave_search", 2, day="2026-07-18")
+        assert quota_module.used(session, "brave_search", day="2026-07-18") == 2
+        assert quota_module.reserve(session, "brave_search", 2, day="2026-07-19")
 
 
 def test_local_sqlite_parent_directory_is_created(tmp_path: Path) -> None:
