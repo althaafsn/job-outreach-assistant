@@ -98,6 +98,24 @@ function stubApi() {
               : url.includes("/settings")
                 ? settings
                 : {};
+      if (url.includes("/workflow/analyze")) {
+        return new Response(
+          [
+            {
+              type: "stage",
+              stage: 1,
+              total_stages: 4,
+              message: "Cleaning and verifying the job posting…",
+              elapsed_ms: 20,
+            },
+            { type: "complete", result: payload, elapsed_ms: 40 },
+          ].map((event) => `${JSON.stringify(event)}\n`).join(""),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/x-ndjson" },
+          },
+        );
+      }
       return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -137,6 +155,83 @@ test("pasted job flows to public evidence and conversation ideas", async () => {
   expect(screen.getByText("Ada launched a public research data training program.")).toBeInTheDocument();
   expect(
     screen.getByText("What did its first users change about your approach?"),
+  ).toBeInTheDocument();
+});
+
+test("workflow shows incremental progress with collapsed technical details", async () => {
+  const normalFetch = fetch;
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      if (!String(input).includes("/workflow/analyze")) {
+        return normalFetch(input, options);
+      }
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/x-ndjson" },
+          },
+        ),
+      );
+    }),
+  );
+  render(<App />);
+  await userEvent.type(
+    screen.getByLabelText("Job description"),
+    "Data Engineer at Example University with a full public description.",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Find people to contact" }));
+  const encoder = new TextEncoder();
+  streamController?.enqueue(
+    encoder.encode(
+      `${JSON.stringify({
+        type: "stage",
+        stage: 2,
+        total_stages: 4,
+        message: "Finding relevant people…",
+        elapsed_ms: 1200,
+      })}\n${JSON.stringify({
+        type: "detail",
+        stage: 2,
+        message: "Found 4 candidate results.",
+        detail: {
+          event: "search",
+          query: '"Example University" data manager',
+          results: 4,
+          model: "openrouter/free",
+        },
+        elapsed_ms: 1400,
+      })}\n`,
+    ),
+  );
+
+  expect(await screen.findByRole("status")).toHaveTextContent("Finding relevant people…");
+  expect(screen.getByText("Stage 2 of 4 · 1.4s")).toBeInTheDocument();
+  expect(screen.getByRole("progressbar", { name: "Research progress" })).toHaveValue(2);
+  const summary = screen.getByText("Technical details");
+  const disclosure = summary.closest("details");
+  expect(disclosure).not.toHaveAttribute("open");
+  await userEvent.click(summary);
+  expect(disclosure).toHaveAttribute("open");
+  expect(screen.getByText('"Example University" data manager')).toBeInTheDocument();
+
+  streamController?.enqueue(
+    encoder.encode(`${JSON.stringify({
+      type: "complete",
+      result: workflowResult,
+      elapsed_ms: 1800,
+    })}\n`),
+  );
+  streamController?.close();
+  expect(
+    await screen.findByRole("heading", { name: "Junior Data Coordinator" }),
   ).toBeInTheDocument();
 });
 

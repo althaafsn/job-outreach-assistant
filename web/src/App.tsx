@@ -66,6 +66,13 @@ type Settings = {
 };
 type JobResponse = { items: Job[]; total: number; offset: number; limit: number; has_more: boolean; facets?: { source?: Record<string, number> } };
 type WorkflowResult = { stage: string; warnings: string[]; job: Job };
+type WorkflowEvent =
+  | { type: "stage"; stage: number; total_stages: number; message: string; elapsed_ms: number }
+  | { type: "detail"; stage: number; message: string; detail: Record<string, unknown>; elapsed_ms: number }
+  | { type: "warning"; message: string; elapsed_ms: number }
+  | { type: "complete"; result: WorkflowResult; elapsed_ms: number }
+  | { type: "error"; message: string; elapsed_ms: number };
+type WorkflowLogEvent = Extract<WorkflowEvent, { type: "stage" | "detail" | "warning" }>;
 type JobFilters = { query: string; status: string; quality: string; location: string; posted: string; source: string; sort: string; offset: number };
 
 const emptyDashboard: Dashboard = {
@@ -86,6 +93,30 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.detail ?? `Request failed (${response.status})`);
   return payload as T;
+}
+
+async function readNdjson(
+  response: Response,
+  onEvent: (event: WorkflowEvent) => void,
+): Promise<void> {
+  if (!response.body) throw new Error("The workflow response could not be streamed.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const parseLines = (complete: boolean) => {
+    const lines = buffer.split("\n");
+    buffer = complete ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (line.trim()) onEvent(JSON.parse(line) as WorkflowEvent);
+    }
+    if (complete && buffer.trim()) onEvent(JSON.parse(buffer) as WorkflowEvent);
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    parseLines(done);
+    if (done) break;
+  }
 }
 
 function statusLabel(status: string) {
@@ -206,15 +237,63 @@ function QuickStartView({ onError }: { onError: (message: string) => void }) {
   const [url, setUrl] = useState("");
   const [result, setResult] = useState<WorkflowResult | null>(null);
   const [working, setWorking] = useState(false);
+  const [stage, setStage] = useState(0);
+  const [stageMessage, setStageMessage] = useState("");
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [peopleFound, setPeopleFound] = useState(0);
+  const [sourcesRetained, setSourcesRetained] = useState(0);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [technicalEvents, setTechnicalEvents] = useState<WorkflowLogEvent[]>([]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setWorking(true);
+    setStage(0);
+    setStageMessage("Starting research…");
+    setElapsedMs(0);
+    setPeopleFound(0);
+    setSourcesRetained(0);
+    setWarnings([]);
+    setTechnicalEvents([]);
+    setResult(null);
     try {
-      setResult(await api<WorkflowResult>("/workflow/analyze", {
+      const response = await fetch("/api/workflow/analyze", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, url: url || null }),
-      }));
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail ?? `Request failed (${response.status})`);
+      }
+      let completed = false;
+      await readNdjson(response, (workflowEvent) => {
+        setElapsedMs(workflowEvent.elapsed_ms);
+        if (workflowEvent.type === "stage") {
+          setStage(workflowEvent.stage);
+          setStageMessage(workflowEvent.message);
+          setTechnicalEvents((current) => [...current, workflowEvent]);
+        } else if (workflowEvent.type === "detail") {
+          setTechnicalEvents((current) => [...current, workflowEvent]);
+          if (
+            workflowEvent.detail.event === "contact"
+            && workflowEvent.detail.decision === "accepted"
+          ) setPeopleFound((count) => count + 1);
+          if (
+            workflowEvent.detail.event === "source"
+            && workflowEvent.detail.decision === "accepted"
+          ) setSourcesRetained((count) => count + 1);
+        } else if (workflowEvent.type === "warning") {
+          setWarnings((current) => [...current, workflowEvent.message]);
+          setTechnicalEvents((current) => [...current, workflowEvent]);
+        } else if (workflowEvent.type === "complete") {
+          completed = true;
+          setResult(workflowEvent.result);
+        } else {
+          throw new Error(workflowEvent.message);
+        }
+      });
+      if (!completed) throw new Error("The workflow ended before returning a result.");
       onError("");
     } catch (requestError) {
       onError(requestError instanceof Error ? requestError.message : "Could not analyze this posting.");
@@ -227,6 +306,9 @@ function QuickStartView({ onError }: { onError: (message: string) => void }) {
     setText("");
     setUrl("");
     setResult(null);
+    setStage(0);
+    setStageMessage("");
+    setTechnicalEvents([]);
   };
 
   if (result) {
@@ -250,12 +332,36 @@ function QuickStartView({ onError }: { onError: (message: string) => void }) {
         <label>Job description
           <textarea required rows={17} value={text} onChange={(event) => setText(event.target.value)} placeholder="Paste the complete job posting here…" />
         </label>
-        {working && <div className="processing-steps" aria-live="polite">
-          <span><strong>1</strong> Clean the job</span>
-          <span><strong>2</strong> Find relevant people</span>
-          <span><strong>3</strong> Research public work</span>
-          <span><strong>4</strong> Prepare conversation ideas</span>
-        </div>}
+        {working && <section className="workflow-progress">
+          <div className="progress-heading">
+            <div>
+              <strong role="status" aria-live="polite">{stageMessage}</strong>
+              <span>Stage {stage} of 4 · {(elapsedMs / 1000).toFixed(1)}s</span>
+            </div>
+            <span>{peopleFound} people · {sourcesRetained} sources</span>
+          </div>
+          <progress aria-label="Research progress" max={4} value={stage} />
+          {warnings.length > 0 && <div className="progress-warnings">
+            {warnings.map((warning) => <span key={warning}>{warning}</span>)}
+          </div>}
+          <details className="technical-log">
+            <summary>Technical details</summary>
+            <ol>
+              {technicalEvents.map((item, index) => <li key={`${item.elapsed_ms}-${index}`}>
+                <span>{(item.elapsed_ms / 1000).toFixed(1)}s</span>
+                <div>
+                  <strong>{item.message}</strong>
+                  {item.type === "detail" && <>
+                    {item.detail.query && <code>{String(item.detail.query)}</code>}
+                    {item.detail.model && <small>Model: {String(item.detail.model)}</small>}
+                    {item.detail.url && <small>Source: {String(item.detail.url)}</small>}
+                    {item.detail.reason && <small>Decision: {String(item.detail.reason)}</small>}
+                  </>}
+                </div>
+              </li>)}
+            </ol>
+          </details>
+        </section>}
         <div className="quick-actions">
           <small>Uses public sources. Nothing is contacted automatically.</small>
           <button className="primary" disabled={working || !text.trim()}>{working ? "Analyzing and researching…" : "Find people to contact"}</button>
