@@ -185,3 +185,128 @@ def test_offline_contract_eval_validates_schema_and_grounding() -> None:
         },
     ]
     assert ai.evaluate_contracts(rows) == {"passed": 2, "failed": []}
+
+
+def _long_job_section() -> str:
+    sentence = (
+        "Build reliable data pipelines, test production services, document decisions, "
+        "and collaborate with researchers and software developers. "
+    )
+    return sentence * 8
+
+
+def test_job_extraction_requires_an_individual_posting_with_grounded_sections() -> None:
+    ai = _module()
+    assert ai is not None
+    body = _long_job_section()
+    source = f"Data Engineer Example Health Vancouver, BC Responsibilities {body}"
+    output = ai.JobExtraction.model_validate(
+        {
+            "page_type": "individual_job",
+            "title": "Data Engineer",
+            "company": "Example Health",
+            "location": "Vancouver, BC",
+            "requisition_id": "JR12345",
+            "posted_at": "2026-07-18",
+            "sections": [{"heading": "Responsibilities", "text": body}],
+            "reason": "",
+        }
+    )
+
+    description = ai.validate_job_extraction(output, source)
+
+    assert description.startswith("Responsibilities\n")
+    assert body.strip() in description
+
+
+def test_job_extraction_accepts_common_free_model_field_aliases() -> None:
+    ai = _module()
+    assert ai is not None
+    output = ai.JobExtraction.model_validate(
+        {
+            "page_kind": "collection",
+            "job_title": "",
+            "employer": "",
+            "description_sections": [],
+            "rejection_reason": "This page lists many jobs.",
+        }
+    )
+    assert output.page_type == "collection"
+    assert output.reason == "This page lists many jobs."
+
+
+def test_job_extraction_rejects_text_not_found_in_the_source() -> None:
+    ai = _module()
+    assert ai is not None
+    output = ai.JobExtraction.model_validate(
+        {
+            "page_type": "individual_job",
+            "title": "Data Engineer",
+            "company": "Example Health",
+            "sections": [
+                {
+                    "heading": "Responsibilities",
+                    "text": _long_job_section(),
+                }
+            ],
+            "reason": "",
+        }
+    )
+    with pytest.raises(ai.UngroundedOutput, match="section"):
+        ai.validate_job_extraction(
+            output,
+            "Data Engineer Example Health This source does not contain the invented duties.",
+        )
+
+
+def test_free_router_requires_structured_output_support_for_job_extraction(
+    tmp_path: Path,
+) -> None:
+    ai = _module()
+    assert ai is not None
+    body = _long_job_section()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["provider"]["require_parameters"] is True
+        return httpx.Response(
+            200,
+            json={
+                "model": "example/free",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "page_type": "individual_job",
+                                    "title": "Data Engineer",
+                                    "company": "Example Health",
+                                    "location": "Vancouver, BC",
+                                    "requisition_id": None,
+                                    "posted_at": None,
+                                    "sections": [
+                                        {"heading": "Responsibilities", "text": body}
+                                    ],
+                                    "reason": "",
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    with _session(tmp_path) as session:
+        client = ai.OpenRouterClient(
+            api_key="test",
+            session=session,
+            transport=httpx.MockTransport(handler),
+            daily_limit=1,
+        )
+        result = client.extract_job(
+            ai.build_job_extraction_prompt(
+                f"Data Engineer Example Health Vancouver, BC Responsibilities {body}"
+            )
+        )
+        assert result.model == "example/free"
+        assert result.value.title == "Data Engineer"
