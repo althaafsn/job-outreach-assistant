@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import re
 from collections.abc import Callable, Iterator, Sequence
@@ -11,10 +12,18 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.ai import DeferredAI, OpenRouterClient, build_angle_prompt
+from app.ai import (
+    PROMPT_VERSION_JOBS,
+    DeferredAI,
+    OpenRouterClient,
+    UngroundedOutput,
+    build_angle_prompt,
+    build_job_extraction_prompt,
+    validate_job_extraction,
+)
 from app.ingest import JobInput, parse_gmail_raw, record_ingest_message, upsert_job
 from app.integrations import (
     BraveSearchClient,
@@ -29,6 +38,7 @@ from app.models import (
     ContactEvidence,
     Job,
     JobContact,
+    JobSource,
     PipelineRun,
     ResearchAngle,
 )
@@ -174,6 +184,142 @@ def backfill_jobs(
         )
         imported += 1
     return imported
+
+
+def _extraction_source(
+    session: Session,
+    job: Job,
+    read_page: Callable[[str], str],
+) -> str:
+    manual = session.scalar(
+        select(JobSource.id).where(
+            JobSource.job_id == job.id,
+            JobSource.source == "manual",
+        )
+    )
+    if manual:
+        return job.description
+    if not job.canonical_url:
+        raise FetchRejected("Job has no public source URL")
+    return read_page(job.canonical_url)
+
+
+def _posted_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _record_extraction_failure(
+    session: Session,
+    job: Job,
+    *,
+    quality_status: str,
+    error: str,
+    model: str | None = None,
+    source_hash: str | None = None,
+) -> Job:
+    job.quality_status = quality_status
+    job.extraction_error = error[:2000]
+    job.extraction_model = model
+    job.extraction_prompt_version = PROMPT_VERSION_JOBS
+    job.extraction_attempts += 1
+    job.extracted_at = datetime.now(UTC)
+    job.source_content_hash = source_hash
+    session.commit()
+    return job
+
+
+def extract_job(
+    session: Session,
+    job: Job,
+    ai: Any,
+    *,
+    read_page: Callable[[str], str] = read_public_page,
+) -> Job:
+    try:
+        source_text = _extraction_source(session, job, read_page)
+    except (FetchRejected, UnsafeURL, httpx.HTTPError) as exc:
+        return _record_extraction_failure(
+            session,
+            job,
+            quality_status="needs_review",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+    result = ai.extract_job(build_job_extraction_prompt(source_text))
+    output = result.value
+    if output.page_type != "individual_job":
+        return _record_extraction_failure(
+            session,
+            job,
+            quality_status="rejected",
+            error=output.reason or f"Page classified as {output.page_type}",
+            model=result.model,
+            source_hash=source_hash,
+        )
+    try:
+        description = validate_job_extraction(output, source_text)
+    except UngroundedOutput as exc:
+        return _record_extraction_failure(
+            session,
+            job,
+            quality_status="needs_review",
+            error=str(exc),
+            model=result.model,
+            source_hash=source_hash,
+        )
+    job.title = output.title.strip()
+    job.company = output.company.strip()
+    job.location = output.location.strip()
+    job.requisition_id = output.requisition_id
+    job.description = description
+    job.posted_at = _posted_at(output.posted_at)
+    job.quality_status = "verified"
+    job.extraction_error = None
+    job.extraction_model = result.model
+    job.extraction_prompt_version = PROMPT_VERSION_JOBS
+    job.extraction_attempts += 1
+    job.extracted_at = datetime.now(UTC)
+    job.source_content_hash = source_hash
+    session.commit()
+    return job
+
+
+def extract_pending_jobs(
+    session: Session,
+    ai: Any,
+    *,
+    max_jobs: int = 50,
+    read_page: Callable[[str], str] = read_public_page,
+) -> int:
+    rows = list(
+        session.execute(
+            select(Job, func.max(JobSource.discovered_at))
+            .outerjoin(JobSource, JobSource.job_id == Job.id)
+            .where(
+                Job.quality_status == "pending",
+                Job.duplicate_of_id.is_(None),
+            )
+            .group_by(Job.id)
+        ).all()
+    )
+    rows.sort(
+        key=lambda row: row[1] or row[0].created_at,
+        reverse=True,
+    )
+    processed = 0
+    for job, _discovered_at in rows[: max(0, max_jobs)]:
+        try:
+            extract_job(session, job, ai, read_page=read_page)
+        except DeferredAI:
+            break
+        processed += 1
+    return processed
 
 
 def _candidate(result: SearchResult, company: str) -> ContactCandidate | None:
