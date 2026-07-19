@@ -25,3 +25,4 @@ web/test-results/
 .DS_Store
 *.tfstate*
 .terraform/
+.worktrees/
