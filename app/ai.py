@@ -370,8 +370,11 @@ class OpenRouterClient:
                 raise DeferredAI("OpenRouter rate limit reached")
             if response.status_code >= 400:
                 raise DeferredAI(f"OpenRouter returned HTTP {response.status_code}")
-            payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
+            try:
+                payload = response.json()
+                content = payload["choices"][0]["message"]["content"]
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                raise DeferredAI("OpenRouter returned an invalid response") from exc
             try:
                 value = schema.model_validate_json(content)
                 return Generated(value=value, model=str(payload.get("model", self.model)))

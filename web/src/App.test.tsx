@@ -212,7 +212,7 @@ test("workflow shows incremental progress with collapsed technical details", asy
     ),
   );
 
-  expect(await screen.findByRole("status")).toHaveTextContent("Finding relevant people…");
+  expect(await screen.findByRole("status")).toHaveTextContent("Found 4 candidate results.");
   expect(screen.getByText("Stage 2 of 4 · 1.4s")).toBeInTheDocument();
   expect(screen.getByRole("progressbar", { name: "Research progress" })).toHaveValue(2);
   const summary = screen.getByText("Technical details");

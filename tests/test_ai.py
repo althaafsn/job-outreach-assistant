@@ -206,6 +206,23 @@ def test_openrouter_repairs_invalid_json_once_and_records_actual_model(tmp_path:
         assert result.value.angles[0].evidence_ids == [7]
 
 
+def test_openrouter_defers_when_provider_returns_non_json(tmp_path: Path) -> None:
+    ai = _module()
+    assert ai is not None
+
+    with _session(tmp_path) as session:
+        client = ai.OpenRouterClient(
+            api_key="test",
+            session=session,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, content=b"upstream unavailable")
+            ),
+            daily_limit=1,
+        )
+        with pytest.raises(ai.DeferredAI, match="invalid response"):
+            client.generate_angles("prompt", allowed_evidence_ids={7})
+
+
 def test_openrouter_selects_only_allowed_search_results(tmp_path: Path) -> None:
     ai = _module()
     assert ai is not None

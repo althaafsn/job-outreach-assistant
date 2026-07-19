@@ -274,6 +274,7 @@ function QuickStartView({ onError }: { onError: (message: string) => void }) {
           setStageMessage(workflowEvent.message);
           setTechnicalEvents((current) => [...current, workflowEvent]);
         } else if (workflowEvent.type === "detail") {
+          setStageMessage(workflowEvent.message);
           setTechnicalEvents((current) => [...current, workflowEvent]);
           if (
             workflowEvent.detail.event === "contact"
