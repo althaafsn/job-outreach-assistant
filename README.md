@@ -29,6 +29,15 @@ uv run job-outreach serve
 Open <http://127.0.0.1:8000>. During frontend development, run
 `npm run dev` from `web/` and open <http://127.0.0.1:5173>.
 
+## How to use the workspace
+
+Start on **Today**. The page shows the next job or outreach action, the last
+automated search, and the queues that need your attention. Use **Jobs** to
+search and filter the complete collected-job library. Open a job and follow
+the four steps: review the posting, decide whether it is relevant, research a
+person using public sources, and prepare a grounded message. **Outreach** keeps
+drafts, sent messages, and follow-ups together. All messages remain manual.
+
 ## Optional integrations
 
 - Gmail: create a separate Google Desktop OAuth client with the read-only

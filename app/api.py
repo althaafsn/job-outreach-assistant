@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Engine, delete, func, select
+from sqlalchemy import Engine, delete, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.ai import (
@@ -117,6 +117,7 @@ Json = dict[str, Any]
 
 
 def _job(job: Job) -> Json:
+    priority, reasons = _job_priority(job)
     return {
         "id": job.id,
         "title": job.title,
@@ -130,7 +131,140 @@ def _job(job: Job) -> Json:
         "suspected_duplicate": job.suspected_duplicate,
         "posted_at": _iso(job.posted_at),
         "created_at": _iso(job.created_at),
+        "priority": priority,
+        "priority_reasons": reasons,
     }
+
+
+def _job_priority(job: Job) -> tuple[int, list[str]]:
+    """Return a transparent, local-only recommendation score for queue ordering."""
+    settings = get_settings()
+    title = job.title.casefold()
+    score = 0
+    reasons: list[str] = []
+    queries = [item.strip().casefold() for item in settings.target_job_queries.split("|") if item.strip()]
+    for query in queries:
+        if query in title:
+            score += 40
+            reasons.append(f"Matches target role: {query}")
+            break
+    stop_words = {"junior", "senior", "entry", "level", "and", "the", "of", "for"}
+    target_words = {
+        word for query in queries for word in query.split() if len(word) > 2 and word not in stop_words
+    }
+    overlap = sorted(word for word in target_words if word in title)
+    if overlap:
+        score += min(len(overlap) * 10, 30)
+        reasons.append(f"Role terms: {', '.join(overlap[:3])}")
+
+    location = job.location.casefold()
+    if "vancouver" in location:
+        score += 25
+        reasons.append("Vancouver")
+    elif "toronto" in location:
+        score += 20
+        reasons.append("Toronto")
+    elif location:
+        score += 10
+        reasons.append("Located in Canada or another specified region")
+
+    if job.posted_at:
+        age = datetime.now(UTC) - (job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC))
+        if age <= timedelta(days=7):
+            score += 20
+            reasons.append("Posted within 7 days")
+        elif age <= timedelta(days=30):
+            score += 10
+            reasons.append("Posted within 30 days")
+        elif age > timedelta(days=90):
+            score -= 10
+    collection_terms = ("jobs", "job openings", "discover", "overview", "opportunities")
+    source_text = f"{job.canonical_url or ''} {job.description}".casefold()
+    collection_signal = any(term in title for term in collection_terms) or any(
+        term in source_text for term in ("jobsearch", "marketreport", "search?", "job postings", "view 37 job")
+    )
+    if not job.requisition_id and collection_signal:
+        score -= 50
+        reasons.append("Looks like a collection page")
+    if not job.company:
+        score -= 15
+    if not job.location:
+        score -= 10
+    return score, reasons[:4]
+
+
+def _job_sort_key(job: Job, sort: str) -> tuple[Any, ...]:
+    if sort == "company":
+        return (job.company.casefold(), job.title.casefold(), job.id)
+    if sort == "newest":
+        value = job.posted_at or job.created_at
+        return (-(value.timestamp() if value else 0), job.id)
+    score, _ = _job_priority(job)
+    value = job.posted_at or job.created_at
+    return (-score, -(value.timestamp() if value else 0), job.id)
+
+
+def _location_matches(job: Job, group: str | None) -> bool:
+    if not group:
+        return True
+    location = job.location.casefold()
+    if group == "vancouver":
+        return "vancouver" in location
+    if group == "toronto":
+        return "toronto" in location
+    if group == "unknown":
+        return not location
+    if group == "canada":
+        return bool(location)
+    if group == "elsewhere_canada":
+        return bool(location) and "vancouver" not in location and "toronto" not in location
+    return True
+
+
+def _outreach_items(session: Session) -> list[Json]:
+    sent_types = {"connection_sent", "message_sent", "email_sent"}
+    now = datetime.now(UTC)
+    items: list[Json] = []
+    drafts = session.scalars(select(Draft).order_by(desc(Draft.created_at))).all()
+    for draft in drafts:
+        job = session.get(Job, draft.job_id)
+        contact = session.get(Contact, draft.contact_id)
+        if not job or not contact:
+            continue
+        events = session.scalars(
+            select(OutreachEvent)
+            .where(OutreachEvent.draft_id == draft.id)
+            .order_by(desc(OutreachEvent.occurred_at))
+        ).all()
+        latest_sent = next((event for event in events if event.type in sent_types), None)
+        latest_follow_up = next((event for event in events if event.follow_up_at), None)
+        follow_up_at = latest_follow_up.follow_up_at if latest_follow_up else None
+        if follow_up_at:
+            follow_up_value = follow_up_at if follow_up_at.tzinfo else follow_up_at.replace(tzinfo=UTC)
+            state = "follow_up_due" if follow_up_value <= now else "follow_up_scheduled"
+        elif latest_sent:
+            state = "sent"
+        else:
+            state = "draft"
+        items.append(
+            {
+                "id": draft.id,
+                "state": state,
+                "channel": draft.kind,
+                "created_at": _iso(draft.created_at),
+                "sent_at": _iso(latest_sent.occurred_at if latest_sent else None),
+                "follow_up_at": _iso(follow_up_at),
+                "draft": {
+                    "id": draft.id,
+                    "kind": draft.kind,
+                    "subjects": json.loads(draft.subject_options_json),
+                    "body": draft.body,
+                },
+                "job": _job(job),
+                "contact": _contact(contact),
+            }
+        )
+    return items
 
 
 def _contact(contact: Contact) -> Json:
@@ -186,6 +320,31 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 select(Job.status, func.count()).group_by(Job.status)
             )
         }
+        all_jobs = session.scalars(
+            select(Job).where(Job.duplicate_of_id.is_(None))
+        ).all()
+        new_jobs = sorted(
+            (row for row in all_jobs if row.status == "new"),
+            key=lambda row: _job_sort_key(row, "recommended"),
+        )
+        interested_jobs = sorted(
+            (row for row in all_jobs if row.status == "interested"),
+            key=lambda row: _job_sort_key(row, "recommended"),
+        )
+        latest_run = session.scalar(select(PipelineRun).order_by(desc(PipelineRun.id)).limit(1))
+        outreach_items = _outreach_items(session)
+        followups = [item for item in outreach_items if item["state"] == "follow_up_due"]
+        drafts = [item for item in outreach_items if item["state"] == "draft"]
+        if followups:
+            next_action = {"type": "follow_up", **followups[0]}
+        elif drafts:
+            next_action = {"type": "review_draft", **drafts[0]}
+        elif interested_jobs:
+            next_action = {"type": "continue_job", "job": _job(interested_jobs[0])}
+        elif new_jobs:
+            next_action = {"type": "review_job", "job": _job(new_jobs[0])}
+        else:
+            next_action = {"type": "import_job"}
         return {
             "jobs": {
                 "total": sum(statuses.values()),
@@ -215,19 +374,42 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                     select(PipelineRun).order_by(PipelineRun.id.desc()).limit(8)
                 )
             ],
+            "automation": {
+                "last_run": {
+                    "status": latest_run.status,
+                    "kind": latest_run.kind,
+                    "started_at": _iso(latest_run.started_at),
+                    "finished_at": _iso(latest_run.finished_at),
+                    "error": latest_run.error,
+                }
+                if latest_run
+                else None,
+                "next_run": "Weekdays at 08:05",
+            },
+            "next_action": next_action,
+            "queues": {
+                "new_jobs": [_job(row) for row in new_jobs[:10]],
+                "interested_jobs": [_job(row) for row in interested_jobs[:10]],
+                "drafts": drafts[:10],
+                "follow_ups": followups[:10],
+            },
         }
 
     @app.get("/api/jobs")
     def jobs(
         status_filter: str | None = None,
         q: str | None = None,
+        location_group: str | None = None,
+        posted_within: int | None = None,
+        source: str | None = None,
+        sort: Literal["recommended", "newest", "company"] = "recommended",
         offset: int = 0,
         limit: int = 50,
         session: Session = Depends(db),
     ) -> Json:
         query = select(Job).where(Job.duplicate_of_id.is_(None))
         if status_filter:
-            query = query.where(Job.status == status_filter)
+            query = query.where(Job.status.in_([item.strip() for item in status_filter.split(",") if item.strip()]))
         if q:
             pattern = f"%{q[:100]}%"
             query = query.where(
@@ -235,10 +417,49 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 | Job.company.ilike(pattern)
                 | Job.description.ilike(pattern)
             )
-        rows = session.scalars(
-            query.order_by(Job.created_at.desc()).offset(max(offset, 0)).limit(min(limit, 100))
-        ).all()
-        return {"items": [_job(row) for row in rows], "offset": offset, "limit": limit}
+        if source:
+            query = query.where(Job.id.in_(select(JobSource.job_id).where(JobSource.source == source)))
+        rows = session.scalars(query).all()
+        rows = [row for row in rows if _location_matches(row, location_group)]
+        if posted_within is not None:
+            cutoff = datetime.now(UTC) - timedelta(days=max(0, posted_within))
+            rows = [
+                row
+                for row in rows
+                if row.posted_at and (row.posted_at if row.posted_at.tzinfo else row.posted_at.replace(tzinfo=UTC)) >= cutoff
+            ]
+        rows.sort(key=lambda row: _job_sort_key(row, sort))
+        status_facets: dict[str, int] = {}
+        location_facets: dict[str, int] = {}
+        for row in rows:
+            status_facets[row.status] = status_facets.get(row.status, 0) + 1
+            location_key = (
+                "vancouver"
+                if "vancouver" in row.location.casefold()
+                else "toronto"
+                if "toronto" in row.location.casefold()
+                else "unknown"
+                if not row.location
+                else "elsewhere_canada"
+            )
+            location_facets[location_key] = location_facets.get(location_key, 0) + 1
+        source_facets: dict[str, int] = {}
+        if rows:
+            for source_name in session.scalars(
+                select(JobSource.source).where(JobSource.job_id.in_([row.id for row in rows])).distinct()
+            ):
+                source_facets[source_name] = source_facets.get(source_name, 0) + 1
+        safe_offset = max(offset, 0)
+        safe_limit = min(max(limit, 1), 100)
+        page = rows[safe_offset : safe_offset + safe_limit]
+        return {
+            "items": [_job(row) for row in page],
+            "total": len(rows),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "has_more": safe_offset + safe_limit < len(rows),
+            "facets": {"status": status_facets, "location": location_facets, "source": source_facets},
+        }
 
     def require_job(job_id: int, session: Session) -> Job:
         row = session.get(Job, job_id)
@@ -570,10 +791,16 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
 
     @app.post("/api/outreach-events", status_code=status.HTTP_201_CREATED)
     def add_outreach(body: OutreachCreate, session: Session = Depends(db)) -> Json:
+        if body.type not in {"connection_sent", "message_sent", "email_sent", "reply_received", "follow_up_sent"}:
+            raise HTTPException(status_code=422, detail="Unsupported outreach event type")
         event = OutreachEvent(**body.model_dump())
         session.add(event)
         session.commit()
         return {"id": event.id, "type": event.type, "occurred_at": _iso(event.occurred_at)}
+
+    @app.get("/api/outreach")
+    def outreach(session: Session = Depends(db)) -> Json:
+        return {"items": _outreach_items(session)}
 
     @app.get("/api/contacts")
     def contacts(session: Session = Depends(db)) -> Json:

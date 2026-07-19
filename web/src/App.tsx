@@ -1,7 +1,8 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Dispatch, FormEvent, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import "./styles.css";
 
-type Page = "Dashboard" | "Jobs" | "Contacts" | "Pipeline runs" | "Settings";
+type Page = "Today" | "Jobs" | "Outreach" | "Settings";
+type JobStatus = "new" | "interested" | "applied" | "archived";
 
 type Job = {
   id: number;
@@ -13,33 +14,16 @@ type Job = {
   url?: string;
   status: string;
   notes: string;
+  posted_at?: string;
+  priority?: number;
+  priority_reasons?: string[];
   contacts?: ContactDetail[];
   drafts?: Draft[];
 };
 
-type Evidence = {
-  id: number;
-  title: string;
-  source_url: string;
-  excerpt: string;
-  kind: string;
-};
-
-type Angle = {
-  id: number;
-  angle: string;
-  question: string;
-  evidence_ids: number[];
-};
-
-type Contact = {
-  id: number;
-  name: string;
-  title: string;
-  company: string;
-  profile_url?: string;
-};
-
+type Contact = { id: number; name: string; title: string; company: string; profile_url?: string };
+type Evidence = { id: number; title: string; source_url: string; excerpt: string; kind: string };
+type Angle = { id: number; angle: string; question: string; evidence_ids: number[] };
 type ContactDetail = Contact & {
   rank: number;
   score: number;
@@ -48,48 +32,47 @@ type ContactDetail = Contact & {
   emails: { id: number; email: string; confidence: string; source_url?: string }[];
   angles: Angle[];
 };
-
-type Draft = {
+type Draft = { id: number; contact_id: number; angle_id?: number; kind: string; subjects: string[]; body: string };
+type OutreachItem = {
   id: number;
-  contact_id: number;
-  angle_id?: number;
-  kind: string;
-  subjects: string[];
-  body: string;
+  state: string;
+  channel: string;
+  created_at?: string;
+  sent_at?: string;
+  follow_up_at?: string;
+  draft: Draft;
+  job: Job;
+  contact: Contact;
 };
-
 type Dashboard = {
   jobs: { total: number; new: number; applied: number; archived: number };
   contacts: number;
   follow_ups: number;
-  usage: { day: string; kind: string; used: number }[];
-  runs: {
-    id: number;
-    kind: string;
-    status: string;
-    started_at: string;
-    error?: string;
-  }[];
+  runs: { id: number; kind: string; status: string; started_at: string; error?: string }[];
+  automation?: { last_run?: { status: string; started_at: string; error?: string } | null; next_run: string };
+  next_action?: { type: string; job?: Job; draft?: Draft; contact?: Contact; state?: string };
+  queues?: { new_jobs: Job[]; interested_jobs: Job[]; drafts: OutreachItem[]; follow_ups: OutreachItem[] };
 };
-
 type Settings = {
   openrouter_configured: boolean;
   brave_search_configured: boolean;
   gmail_authorized: boolean;
   openrouter_model?: string;
-  openrouter_daily_limit?: number;
-  brave_daily_limit?: number;
   target_job_queries?: string[];
   target_location?: string;
 };
+type JobResponse = { items: Job[]; total: number; offset: number; limit: number; has_more: boolean; facets?: { source?: Record<string, number> } };
+type JobFilters = { query: string; status: string; location: string; posted: string; source: string; sort: string; offset: number };
 
 const emptyDashboard: Dashboard = {
   jobs: { total: 0, new: 0, applied: 0, archived: 0 },
   contacts: 0,
   follow_ups: 0,
-  usage: [],
   runs: [],
+  automation: { last_run: null, next_run: "Not scheduled" },
+  queues: { new_jobs: [], interested_jobs: [], drafts: [], follow_ups: [] },
 };
+const emptyJobs: JobResponse = { items: [], total: 0, offset: 0, limit: 25, has_more: false };
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -97,793 +80,188 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...options?.headers },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.detail ?? `Request failed (${response.status})`);
-  }
+  if (!response.ok) throw new Error(payload.detail ?? `Request failed (${response.status})`);
   return payload as T;
 }
 
+function statusLabel(status: string) {
+  return { new: "Needs decision", interested: "Interested", applied: "Applied", archived: "Not for me" }[status] ?? status;
+}
+
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`status status-${status}`}>{status.replaceAll("_", " ")}</span>;
+  return <span className={`status status-${status}`}>{statusLabel(status)}</span>;
+}
+
+function formatDate(value?: string) {
+  if (!value) return "Date unknown";
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function routeFromLocation(): { page: Page; jobId?: number } {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "jobs" && parts[1] && Number.isFinite(Number(parts[1]))) return { page: "Jobs", jobId: Number(parts[1]) };
+  if (parts[0] === "jobs") return { page: "Jobs" };
+  if (parts[0] === "outreach") return { page: "Outreach" };
+  if (parts[0] === "settings") return { page: "Settings" };
+  return { page: "Today" };
 }
 
 function App() {
-  const [page, setPage] = useState<Page>("Dashboard");
+  const initialRoute = routeFromLocation();
+  const initialJobId = initialRoute.jobId;
+  const [page, setPage] = useState<Page>(initialRoute.page);
   const [dashboard, setDashboard] = useState<Dashboard>(emptyDashboard);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [settings, setSettings] = useState<Settings>({
-    openrouter_configured: false,
-    brave_search_configured: false,
-    gmail_authorized: false,
-  });
+  const [jobsData, setJobsData] = useState<JobResponse>(emptyJobs);
+  const [outreach, setOutreach] = useState<OutreachItem[]>([]);
+  const [settings, setSettings] = useState<Settings>({ openrouter_configured: false, brave_search_configured: false, gmail_authorized: false });
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [filters, setFilters] = useState<JobFilters>({ query: "", status: "", location: "", posted: "", source: "", sort: "recommended", offset: 0 });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
 
-  const refresh = async () => {
+  const loadJobs = useCallback(async () => {
+    const params = new URLSearchParams({ limit: "25", offset: String(filters.offset), sort: filters.sort });
+    if (filters.query) params.set("q", filters.query);
+    if (filters.status) params.set("status_filter", filters.status);
+    if (filters.location) params.set("location_group", filters.location);
+    if (filters.posted) params.set("posted_within", filters.posted);
+    if (filters.source) params.set("source", filters.source);
+    setJobsData(await api<JobResponse>(`/jobs?${params}`));
+  }, [filters]);
+  const loadAll = async () => {
     try {
-      const [dashboardData, jobsData, contactsData, settingsData] = await Promise.all([
+      const [dashboardData, outreachData, settingsData] = await Promise.all([
         api<Dashboard>("/dashboard"),
-        api<{ items: Job[] }>("/jobs"),
-        api<{ items: Contact[] }>("/contacts"),
+        api<{ items: OutreachItem[] }>("/outreach"),
         api<Settings>("/settings"),
       ]);
       setDashboard(dashboardData);
-      setJobs(jobsData.items);
-      setContacts(contactsData.items);
+      setOutreach(outreachData.items);
       setSettings(settingsData);
       setError("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load data.");
+      setError(requestError instanceof Error ? requestError.message : "Could not load the workspace.");
     }
   };
-
+  useEffect(() => { void loadAll(); }, []);
   useEffect(() => {
-    void refresh();
-  }, []);
+    const onPopState = () => {
+      const route = routeFromLocation();
+      setPage(route.page);
+      if (route.jobId) void api<Job>(`/jobs/${route.jobId}`).then(setSelectedJob).catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not open the job."));
+      else setSelectedJob(null);
+    };
+    if (initialJobId) void api<Job>(`/jobs/${initialJobId}`).then(setSelectedJob).catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not open the job."));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [initialJobId]);
+  useEffect(() => {
+    void loadJobs().catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not load jobs."));
+  }, [loadJobs]);
 
-  const openJob = async (id: number) => {
-    setBusy("job");
-    try {
-      setSelectedJob(await api<Job>(`/jobs/${id}`));
-      setPage("Jobs");
-      setError("");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not open job.");
-    } finally {
-      setBusy("");
-    }
+  const navigate = (next: Page) => { window.history.pushState({}, "", next === "Today" ? "/today" : `/${next.toLowerCase()}`); setPage(next); setSelectedJob(null); setError(""); };
+  const openJob = async (id: number, pushHistory = true) => {
+    setBusy("open-job");
+    try { setSelectedJob(await api<Job>(`/jobs/${id}`)); if (pushHistory) window.history.pushState({}, "", `/jobs/${id}`); setPage("Jobs"); setError(""); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not open the job."); }
+    finally { setBusy(""); }
   };
+  const refreshAfterChange = async () => { await Promise.all([loadAll(), loadJobs()]); };
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
-          <strong>REACHBOARD</strong>
-          <span>PRIVATE WORKSPACE</span>
-        </div>
+        <div className="brand"><strong>REACHBOARD</strong><span>PRIVATE WORKSPACE</span></div>
         <nav aria-label="Primary">
-          {(["Dashboard", "Jobs", "Contacts", "Pipeline runs", "Settings"] as Page[]).map(
-            (item) => (
-              <button
-                className={page === item ? "nav-item active" : "nav-item"}
-                key={item}
-                onClick={() => {
-                  setPage(item);
-                  if (item !== "Jobs") setSelectedJob(null);
-                }}
-              >
-                <span aria-hidden="true">
-                  {item === "Dashboard"
-                    ? "⌂"
-                    : item === "Jobs"
-                      ? "▤"
-                      : item === "Contacts"
-                        ? "◉"
-                        : item === "Pipeline runs"
-                          ? "↻"
-                          : "⚙"}
-                </span>
-                {item}
-              </button>
-            ),
-          )}
+          {(["Today", "Jobs", "Outreach", "Settings"] as Page[]).map((item) => (
+            <button className={page === item ? "nav-item active" : "nav-item"} key={item} onClick={() => navigate(item)}>
+              <span aria-hidden="true">{item === "Today" ? "⌂" : item === "Jobs" ? "▤" : item === "Outreach" ? "✉" : "⚙"}</span>{item}
+            </button>
+          ))}
         </nav>
-        <div className="privacy-note">
-          <span className="privacy-dot" />
-          <div>
-            <strong>Local & private</strong>
-            <small>Nothing is sent without review.</small>
-          </div>
-        </div>
+        <div className="privacy-note"><span className="privacy-dot" /><div><strong>Local & private</strong><small>Nothing is sent without review.</small></div></div>
       </aside>
-
       <main className="main">
-        {error && (
-          <div className="alert" role="alert">
-            {error}
-            <button onClick={() => setError("")} aria-label="Dismiss error">
-              ×
-            </button>
-          </div>
-        )}
-        {page === "Dashboard" && (
-          <DashboardView dashboard={dashboard} jobs={jobs} onOpen={openJob} busy={busy} />
-        )}
-        {page === "Jobs" &&
-          (selectedJob ? (
-            <JobDetailView
-              job={selectedJob}
-              settings={settings}
-              onBack={() => setSelectedJob(null)}
-              onRefresh={() => openJob(selectedJob.id)}
-              onError={setError}
-            />
-          ) : (
-            <JobsView jobs={jobs} onOpen={openJob} onImported={refresh} onError={setError} />
-          ))}
-        {page === "Contacts" && <ContactsView contacts={contacts} />}
-        {page === "Pipeline runs" && <PipelineView dashboard={dashboard} />}
-        {page === "Settings" && (
-          <SettingsView settings={settings} onDeleted={refresh} onError={setError} />
-        )}
+        {error && <div className="alert" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
+        {page === "Today" && <TodayView dashboard={dashboard} onOpen={openJob} onNavigate={navigate} busy={busy} />}
+        {page === "Jobs" && (selectedJob ? <JobDetailView job={selectedJob} settings={settings} onBack={() => { window.history.pushState({}, "", "/jobs"); setSelectedJob(null); }} onRefresh={async () => { await openJob(selectedJob.id, false); await refreshAfterChange(); }} onError={setError} onStatus={async (status) => { await api(`/jobs/${selectedJob.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await refreshAfterChange(); await openJob(selectedJob.id, false); }} /> : <JobsView data={jobsData} filters={filters} setFilters={setFilters} onOpen={openJob} onImport={() => setImportOpen(true)} />)}
+        {page === "Outreach" && <OutreachView items={outreach} onRefresh={refreshAfterChange} onError={setError} />}
+        {page === "Settings" && <SettingsView settings={settings} onDeleted={refreshAfterChange} onError={setError} />}
       </main>
+      {importOpen && <ImportDialog onClose={() => setImportOpen(false)} onImported={async () => { setImportOpen(false); await refreshAfterChange(); }} onError={setError} />}
     </div>
   );
 }
 
-function DashboardView({
-  dashboard,
-  jobs,
-  onOpen,
-  busy,
-}: {
-  dashboard: Dashboard;
-  jobs: Job[];
-  onOpen: (id: number) => void;
-  busy: string;
-}) {
-  const cards = [
-    ["Total jobs", dashboard.jobs.total, "blue"],
-    ["Need review", dashboard.jobs.new, "amber"],
-    ["Contacts found", dashboard.contacts, "violet"],
-    ["Follow-ups due", dashboard.follow_ups, "green"],
-  ] as const;
-  return (
-    <>
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">DAILY REVIEW</p>
-          <h1>Good morning, Althaaf</h1>
-          <p>Review today&apos;s jobs, evidence, and next outreach steps.</p>
-        </div>
-        <span className="local-badge">● Local & private</span>
-      </header>
-      <section className="metrics" aria-label="Workflow summary">
-        {cards.map(([label, value, tone]) => (
-          <article className={`metric metric-${tone}`} key={label}>
-            <strong>{value}</strong>
-            <span>{label}</span>
-          </article>
-        ))}
-      </section>
-      <section className="dashboard-grid">
-        <div className="panel">
-          <div className="panel-title">
-            <div>
-              <h2>Jobs to review</h2>
-              <p>Newest records that still need a decision.</p>
-            </div>
-            <span>{jobs.length}</span>
-          </div>
-          <div className="job-stack">
-            {jobs.length ? (
-              jobs.slice(0, 7).map((job) => (
-                <button className="job-row" key={job.id} onClick={() => onOpen(job.id)}>
-                  <span>
-                    <strong>{job.title}</strong>
-                    <small>
-                      {job.company} · {job.location || "Location unknown"}
-                    </small>
-                  </span>
-                  <StatusBadge status={job.status} />
-                </button>
-              ))
-            ) : (
-              <Empty title="No jobs yet" text="Import a posting or authorize Gmail alerts." />
-            )}
-          </div>
-        </div>
-        <div className="panel next-step">
-          <div className="panel-title">
-            <div>
-              <h2>Next best step</h2>
-              <p>The workflow stays useful even before every integration is configured.</p>
-            </div>
-          </div>
-          {jobs[0] ? (
-            <>
-              <span className="kicker">REVIEW THE SOURCE</span>
-              <h3>{jobs[0].title}</h3>
-              <p className="muted">{jobs[0].company}</p>
-              <p className="excerpt">{jobs[0].description.slice(0, 260)}</p>
-              <button className="primary" disabled={busy === "job"} onClick={() => onOpen(jobs[0].id)}>
-                Open research workspace
-              </button>
-            </>
-          ) : (
-            <Empty title="Start with one posting" text="Paste a Workday or careers-page description." />
-          )}
-        </div>
-      </section>
-    </>
-  );
+function AutomationCard({ dashboard }: { dashboard: Dashboard }) {
+  const run = dashboard.automation?.last_run;
+  return <div className="automation-card"><div><span className={`health ${run?.status === "completed" ? "on" : ""}`} /><strong>{run?.status === "completed" ? "Last search completed" : run ? "Search needs attention" : "Search has not run yet"}</strong></div><span>{run ? formatDate(run.started_at) : "Run the daily command to collect jobs"}</span><small>Next search: {dashboard.automation?.next_run ?? "Not scheduled"}</small></div>;
 }
 
-function JobsView({
-  jobs,
-  onOpen,
-  onImported,
-  onError,
-}: {
-  jobs: Job[];
-  onOpen: (id: number) => void;
-  onImported: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [text, setText] = useState("");
-  const [company, setCompany] = useState("");
-  const [url, setUrl] = useState("");
-  const [saving, setSaving] = useState(false);
-  const filtered = useMemo(
-    () =>
-      jobs.filter((job) =>
-        `${job.title} ${job.company} ${job.requisition_id ?? ""}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      ),
-    [jobs, query],
-  );
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    try {
-      await api("/jobs/import", {
-        method: "POST",
-        body: JSON.stringify({ text, company, url: url || null }),
-      });
-      setText("");
-      setCompany("");
-      setUrl("");
-      await onImported();
-    } catch (requestError) {
-      onError(requestError instanceof Error ? requestError.message : "Import failed.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <>
-      <header className="page-header compact">
-        <div>
-          <p className="eyebrow">SOURCE → STRUCTURE</p>
-          <h1>Job workspace</h1>
-          <p>Import, correct, and decide which postings deserve outreach.</p>
-        </div>
-      </header>
-      <div className="workspace-grid">
-        <section className="panel import-panel">
-          <h2>Import a posting</h2>
-          <p className="muted">Paste the public description. The parser extracts the core fields.</p>
-          <form onSubmit={submit}>
-            <label>
-              Company
-              <input value={company} onChange={(event) => setCompany(event.target.value)} />
-            </label>
-            <label>
-              Public URL
-              <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} />
-            </label>
-            <label>
-              Paste a job description
-              <textarea
-                required
-                rows={12}
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                placeholder="Job title, location, requisition ID, summary…"
-              />
-            </label>
-            <button className="primary" disabled={saving || !text.trim()}>
-              {saving ? "Importing…" : "Import job"}
-            </button>
-          </form>
-        </section>
-        <section className="panel">
-          <div className="panel-title">
-            <div>
-              <h2>All jobs</h2>
-              <p>{filtered.length} structured records</p>
-            </div>
-          </div>
-          <label className="search">
-            <span className="sr-only">Search jobs</span>
-            <input
-              placeholder="Search title, company, or ID"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="job-stack scroll">
-            {filtered.map((job) => (
-              <button className="job-row" key={job.id} onClick={() => onOpen(job.id)}>
-                <span>
-                  <strong>{job.title}</strong>
-                  <small>
-                    {job.company} · {job.requisition_id || "No requisition ID"}
-                  </small>
-                </span>
-                <StatusBadge status={job.status} />
-              </button>
-            ))}
-          </div>
-        </section>
-      </div>
-    </>
-  );
+function TodayView({ dashboard, onOpen, onNavigate, busy }: { dashboard: Dashboard; onOpen: (id: number) => void; onNavigate: (page: Page) => void; busy: string }) {
+  const action = dashboard.next_action;
+  const actionButton = action?.type === "review_draft" || action?.type === "follow_up" ? <button className="primary" onClick={() => onNavigate("Outreach")}>Open outreach</button> : action?.job ? <button className="primary" disabled={busy === "open-job"} onClick={() => onOpen(action.job!.id)}>{busy === "open-job" ? "Opening…" : "Review job"}</button> : <button className="primary" onClick={() => onNavigate("Jobs")}>Open job library</button>;
+  return <>
+    <header className="page-header"><div><p className="eyebrow">YOUR NEXT ACTION</p><h1>Today</h1><p>Work through the most useful job and outreach actions first.</p></div><span className="local-badge">● Local & private</span></header>
+    <AutomationCard dashboard={dashboard} />
+    <section className="today-layout">
+      <article className="panel next-action"><div className="panel-title"><div><p className="eyebrow">DO THIS NEXT</p><h2>{action?.type === "follow_up" ? "Follow up with someone" : action?.type === "review_draft" ? "Review a draft" : action?.type === "continue_job" ? "Continue this job" : "Review a new job"}</h2></div></div>{action?.job ? <><h3>{action.job.title}</h3><p className="muted">{action.job.company} · {action.job.location || "Location unknown"}</p><div className="reason-list">{(action.job.priority_reasons ?? []).map((reason) => <span key={reason}>✓ {reason}</span>)}</div>{actionButton}</> : <Empty title="Your queue is clear" text="Import a job or wait for the next automated search." />}</article>
+      <section className="panel"><div className="panel-title"><div><h2>Queue overview</h2><p>Only actions that need your attention.</p></div></div><QueueCount label="New jobs to review" value={dashboard.queues?.new_jobs.length ?? dashboard.jobs.new} onClick={() => onNavigate("Jobs")} /><QueueCount label="Interested jobs in progress" value={dashboard.queues?.interested_jobs.length ?? 0} onClick={() => onNavigate("Jobs")} /><QueueCount label="Drafts awaiting review" value={dashboard.queues?.drafts.length ?? 0} onClick={() => onNavigate("Outreach")} /><QueueCount label="Follow-ups due" value={dashboard.queues?.follow_ups.length ?? dashboard.follow_ups} onClick={() => onNavigate("Outreach")} /></section>
+    </section>
+    <section className="secondary-summary"><article><strong>{dashboard.jobs.total}</strong><span>Total jobs in library</span></article><article><strong>{dashboard.contacts}</strong><span>People researched</span></article><article><strong>{dashboard.jobs.applied}</strong><span>Applications recorded</span></article><article><strong>{dashboard.jobs.archived}</strong><span>Skipped jobs</span></article></section>
+  </>;
 }
 
-function JobDetailView({
-  job,
-  settings,
-  onBack,
-  onRefresh,
-  onError,
-}: {
-  job: Job;
-  settings: Settings;
-  onBack: () => void;
-  onRefresh: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [busy, setBusy] = useState("");
-  const [perspective, setPerspective] = useState("");
-  const run = async (kind: "research" | "angles") => {
-    setBusy(kind);
-    try {
-      await api(kind === "research" ? `/jobs/${job.id}/research` : `/jobs/${job.id}/angles/generate`, {
-        method: "POST",
-        body: kind === "angles" ? JSON.stringify({ perspective }) : undefined,
-      });
-      await onRefresh();
-    } catch (requestError) {
-      onError(requestError instanceof Error ? requestError.message : `${kind} failed.`);
-    } finally {
-      setBusy("");
-    }
-  };
-  const updateStatus = async (status: string) => {
-    await api(`/jobs/${job.id}`, { method: "PATCH", body: JSON.stringify({ status }) });
-    await onRefresh();
-  };
+function QueueCount({ label, value, onClick }: { label: string; value: number; onClick: () => void }) { return <button className="queue-count" onClick={onClick}><span>{label}</span><strong>{value}</strong><span aria-hidden="true">→</span></button>; }
 
-  return (
-    <>
-      <button className="back" onClick={onBack}>
-        ← Back to jobs
-      </button>
-      <header className="detail-header">
-        <div>
-          <p className="eyebrow">{job.requisition_id || "NO REQUISITION ID"}</p>
-          <h1>{job.title}</h1>
-          <p>
-            {job.company} · {job.location || "Location unknown"}
-          </p>
-        </div>
-        <div className="actions">
-          <select
-            aria-label="Application status"
-            value={job.status}
-            onChange={(event) => void updateStatus(event.target.value)}
-          >
-            <option value="new">New</option>
-            <option value="interested">Interested</option>
-            <option value="applied">Applied</option>
-            <option value="archived">Archived</option>
-          </select>
-          {job.url && (
-            <a className="secondary button-link" href={job.url} target="_blank" rel="noreferrer">
-              View source ↗
-            </a>
-          )}
-        </div>
-      </header>
-      <section className="detail-grid">
-        <div className="panel">
-          <div className="panel-title">
-            <div>
-              <h2>People worth learning from</h2>
-              <p>Up to three contacts, reused across related jobs.</p>
-            </div>
-            <button
-              className="secondary"
-              disabled={busy === "research" || !settings.brave_search_configured}
-              onClick={() => void run("research")}
-            >
-              {busy === "research" ? "Researching…" : job.contacts?.length ? "Research more" : "Find contacts"}
-            </button>
-          </div>
-          {!settings.brave_search_configured && (
-            <SetupHint text="Add BRAVE_API_KEY in .env to discover public profiles." />
-          )}
-          {job.contacts?.length ? (
-            job.contacts.map((contact) => (
-              <ContactCard
-                key={contact.id}
-                contact={contact}
-                job={job}
-                settings={settings}
-                onRefresh={onRefresh}
-                onError={onError}
-              />
-            ))
-          ) : (
-            <Empty
-              title="No contacts researched"
-              text="You can configure public search or add one through the API."
-            />
-          )}
-        </div>
-        <aside className="panel source-panel">
-          <span className="kicker">JOB CONTEXT</span>
-          <h2>What the role actually needs</h2>
-          <p className="long-copy">{job.description}</p>
-          <div className="angle-controls">
-            <label>
-              Shift the research perspective
-              <textarea
-                rows={4}
-                value={perspective}
-                onChange={(event) => setPerspective(event.target.value)}
-                placeholder="Example: focus on their transition into research data or a recent public project."
-              />
-            </label>
-            <button
-              className="primary"
-              disabled={busy === "angles" || !settings.openrouter_configured || !job.contacts?.length}
-              onClick={() => void run("angles")}
-            >
-              {busy === "angles" ? "Finding angles…" : "Find conversation angles"}
-            </button>
-            {!settings.openrouter_configured && (
-              <SetupHint text="Add an OpenRouter key to create evidence-grounded angles and drafts." />
-            )}
-          </div>
-        </aside>
-      </section>
-    </>
-  );
+function JobsView({ data, filters, setFilters, onOpen, onImport }: { data: JobResponse; filters: JobFilters; setFilters: Dispatch<SetStateAction<JobFilters>>; onOpen: (id: number) => void; onImport: () => void }) {
+  const update = (key: keyof JobFilters, value: string) => setFilters((current) => ({ ...current, [key]: value, offset: 0 }));
+  return <>
+    <header className="page-header compact"><div><p className="eyebrow">COMPLETE JOB LIBRARY</p><h1>Jobs</h1><p>Search every collected posting, then open one to begin the outreach workflow.</p></div><button className="primary" onClick={onImport}>＋ Import job</button></header>
+    <section className="panel library-panel"><div className="library-toolbar"><label className="search-field"><span className="sr-only">Search jobs</span><input aria-label="Search jobs" placeholder="Search title, company, description, or ID" value={filters.query} onChange={(event) => update("query", event.target.value)} /></label><label><span className="sr-only">Job status</span><select aria-label="Job status" value={filters.status} onChange={(event) => update("status", event.target.value)}><option value="">All statuses</option><option value="new">Needs decision</option><option value="interested">Interested</option><option value="applied">Applied</option><option value="archived">Not for me</option></select></label><label><span className="sr-only">Location</span><select aria-label="Location" value={filters.location} onChange={(event) => update("location", event.target.value)}><option value="">All Canada</option><option value="vancouver">Vancouver</option><option value="toronto">Toronto</option><option value="elsewhere_canada">Elsewhere in Canada</option><option value="unknown">Unknown</option></select></label><label><span className="sr-only">Source</span><select aria-label="Source" value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="">All sources</option>{Object.keys(data.facets?.source ?? {}).sort().map((source) => <option key={source} value={source}>{source}</option>)}</select></label><label><span className="sr-only">Posted within</span><select aria-label="Posted within" value={filters.posted} onChange={(event) => update("posted", event.target.value)}><option value="">Any age</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></label><label><span className="sr-only">Sort jobs</span><select aria-label="Sort jobs" value={filters.sort} onChange={(event) => update("sort", event.target.value)}><option value="recommended">Recommended</option><option value="newest">Newest</option><option value="company">Company</option></select></label></div><div className="library-meta"><strong>{data.total.toLocaleString()} {data.total === 1 ? "job" : "jobs"}</strong><span>Page {Math.floor(data.offset / data.limit) + 1}</span></div><div className="job-list">{data.items.length ? data.items.map((job) => <button className="job-row library-row" key={job.id} onClick={() => onOpen(job.id)}><span><strong>{job.title}</strong><small>{job.company} · {job.location || "Location unknown"} · {formatDate(job.posted_at)}</small>{job.priority_reasons?.length ? <em>{job.priority_reasons.slice(0, 3).join(" · ")}</em> : null}</span><StatusBadge status={job.status} /></button>) : <Empty title="No matching jobs" text="Try clearing a filter or import a new posting." />}</div><div className="pagination"><button className="secondary" disabled={data.offset === 0} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: Math.max(0, current.offset - 25) }))}>← Previous</button><button className="secondary" disabled={!data.has_more} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: current.offset + 25 }))}>Next →</button></div></section>
+  </>;
 }
 
-function ContactCard({
-  contact,
-  job,
-  settings,
-  onRefresh,
-  onError,
-}: {
-  contact: ContactDetail;
-  job: Job;
-  settings: Settings;
-  onRefresh: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [kind, setKind] = useState("connection_note");
-  const [context, setContext] = useState("I recently applied for this role.");
-  const [busy, setBusy] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [recordedDraftId, setRecordedDraftId] = useState<number | null>(null);
-  const latestDraft = job.drafts?.find((draft) => draft.contact_id === contact.id);
-  const generate = async (angle: Angle) => {
-    setBusy(true);
-    try {
-      await api(`/jobs/${job.id}/contacts/${contact.id}/drafts/generate`, {
-        method: "POST",
-        body: JSON.stringify({ kind, angle_id: angle.id, user_context: context }),
-      });
-      await onRefresh();
-    } catch (requestError) {
-      onError(requestError instanceof Error ? requestError.message : "Draft failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const recordSent = async (draft: Draft) => {
-    const eventType =
-      draft.kind === "email"
-        ? "email_sent"
-        : draft.kind === "post_connection"
-          ? "message_sent"
-          : "connection_sent";
-    setRecording(true);
-    try {
-      await api("/outreach-events", {
-        method: "POST",
-        body: JSON.stringify({
-          job_id: job.id,
-          contact_id: contact.id,
-          draft_id: draft.id,
-          type: eventType,
-        }),
-      });
-      setRecordedDraftId(draft.id);
-    } catch (requestError) {
-      onError(requestError instanceof Error ? requestError.message : "Could not record outreach.");
-    } finally {
-      setRecording(false);
-    }
-  };
-  return (
-    <article className="contact-card">
-      <div className="contact-heading">
-        <div className="avatar" aria-hidden="true">
-          {contact.name
-            .split(" ")
-            .slice(0, 2)
-            .map((part) => part[0])
-            .join("")}
-        </div>
-        <div>
-          <h3>{contact.name}</h3>
-          <p>
-            {contact.title} · {contact.company}
-          </p>
-        </div>
-        {contact.profile_url && (
-          <a href={contact.profile_url} target="_blank" rel="noreferrer" aria-label={`Open ${contact.name}'s public profile`}>
-            ↗
-          </a>
-        )}
-      </div>
-      {contact.evidence.map((item) => (
-        <blockquote key={item.id}>
-          <span>PUBLIC EVIDENCE · {item.kind.replaceAll("_", " ")}</span>
-          <p>“{item.excerpt}”</p>
-          <a href={item.source_url} target="_blank" rel="noreferrer">
-            {item.title} ↗
-          </a>
-        </blockquote>
-      ))}
-      {contact.emails?.map((item) => (
-        <div className="email-row" key={item.id}>
-          <span>
-            <strong>{item.email}</strong>
-            <small>{item.confidence.replaceAll("_", " ")}</small>
-          </span>
-          {item.source_url && (
-            <a href={item.source_url} target="_blank" rel="noreferrer">
-              Evidence ↗
-            </a>
-          )}
-        </div>
-      ))}
-      {contact.angles.map((angle) => (
-        <div className="angle-card" key={angle.id}>
-          <span className="kicker">CONVERSATION ANGLE</span>
-          <p>{angle.angle}</p>
-          <strong>{angle.question}</strong>
-          <div className="draft-controls">
-            <select aria-label="Draft channel" value={kind} onChange={(event) => setKind(event.target.value)}>
-              <option value="connection_note">Connection note</option>
-              <option value="post_connection">Post-connection message</option>
-              <option value="email">Coffee-chat email</option>
-            </select>
-            <input
-              aria-label="Truthful outreach context"
-              value={context}
-              onChange={(event) => setContext(event.target.value)}
-            />
-            <button
-              className="secondary"
-              disabled={!settings.openrouter_configured || busy}
-              onClick={() => void generate(angle)}
-            >
-              {busy ? "Drafting…" : "Draft for review"}
-            </button>
-          </div>
-        </div>
-      ))}
-      {latestDraft && (
-        <div className="draft">
-          <div>
-            <span className="kicker">LATEST DRAFT · MANUAL SEND ONLY</span>
-            <span className="draft-actions">
-              <button onClick={() => void navigator.clipboard.writeText(latestDraft.body)}>Copy</button>
-              <button
-                disabled={recording || recordedDraftId === latestDraft.id}
-                onClick={() => void recordSent(latestDraft)}
-              >
-                {recordedDraftId === latestDraft.id
-                  ? "Sent locally"
-                  : recording
-                    ? "Recording…"
-                    : "Mark sent"}
-              </button>
-            </span>
-          </div>
-          {latestDraft.subjects.map((subject) => (
-            <strong key={subject}>Subject: {subject}</strong>
-          ))}
-          <p>{latestDraft.body}</p>
-          <small>
-            {latestDraft.body.length} characters · {latestDraft.body.split(/\s+/).length} words
-          </small>
-        </div>
-      )}
-    </article>
-  );
+function ImportDialog({ onClose, onImported, onError }: { onClose: () => void; onImported: () => Promise<void>; onError: (message: string) => void }) {
+  const [text, setText] = useState(""); const [company, setCompany] = useState(""); const [url, setUrl] = useState(""); const [saving, setSaving] = useState(false);
+  const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { await api("/jobs/import", { method: "POST", body: JSON.stringify({ text, company, url: url || null }) }); await onImported(); } catch (error) { onError(error instanceof Error ? error.message : "Import failed."); } finally { setSaving(false); } };
+  return <div className="modal-backdrop" role="presentation"><dialog open className="modal"><div className="modal-header"><div><p className="eyebrow">MANUAL IMPORT</p><h2>Import a job</h2><p className="muted">Paste a public posting when it is not in your automated alerts.</p></div><button className="icon-button" onClick={onClose} aria-label="Close import dialog">×</button></div><form onSubmit={submit}><label>Company<input value={company} onChange={(event) => setCompany(event.target.value)} /></label><label>Public URL<input type="url" value={url} onChange={(event) => setUrl(event.target.value)} /></label><label>Job description<textarea required rows={12} value={text} onChange={(event) => setText(event.target.value)} placeholder="Paste the full posting here" /></label><div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={saving || !text.trim()}>{saving ? "Importing…" : "Import job"}</button></div></form></dialog></div>;
 }
 
-function ContactsView({ contacts }: { contacts: Contact[] }) {
-  return (
-    <>
-      <header className="page-header compact">
-        <div>
-          <p className="eyebrow">GLOBAL DEDUPLICATION</p>
-          <h1>People</h1>
-          <p>One professional record can connect to several relevant jobs.</p>
-        </div>
-      </header>
-      <section className="panel card-grid">
-        {contacts.length ? (
-          contacts.map((contact) => (
-            <article className="person-card" key={contact.id}>
-              <div className="avatar">{contact.name.slice(0, 2).toUpperCase()}</div>
-              <h2>{contact.name}</h2>
-              <p>{contact.title}</p>
-              <small>{contact.company}</small>
-              {contact.profile_url && (
-                <a href={contact.profile_url} target="_blank" rel="noreferrer">
-                  Public profile ↗
-                </a>
-              )}
-            </article>
-          ))
-        ) : (
-          <Empty title="No contacts yet" text="Open a job and run public contact research." />
-        )}
-      </section>
-    </>
-  );
+function JobDetailView({ job, settings, onBack, onRefresh, onError, onStatus }: { job: Job; settings: Settings; onBack: () => void; onRefresh: () => Promise<void>; onError: (message: string) => void; onStatus: (status: JobStatus) => Promise<void> }) {
+  const [busy, setBusy] = useState(""); const [perspective, setPerspective] = useState("");
+  const run = async (kind: "research" | "angles") => { setBusy(kind); try { await api(kind === "research" ? `/jobs/${job.id}/research` : `/jobs/${job.id}/angles/generate`, { method: "POST", body: kind === "angles" ? JSON.stringify({ perspective }) : undefined }); await onRefresh(); } catch (error) { onError(error instanceof Error ? error.message : `${kind} failed.`); } finally { setBusy(""); } };
+  const step = job.status === "new" ? 1 : job.contacts?.length ? 3 : 2;
+  return <>
+    <button className="back-link" onClick={onBack}>← Back to jobs</button><header className="detail-header"><div><p className="eyebrow">JOB WORKFLOW</p><h1>Review this job</h1><p>{job.company} · {job.location || "Location unknown"} · {formatDate(job.posted_at)}</p></div><StatusBadge status={job.status} /></header>
+    <div className="workflow-steps" aria-label="Job workflow"><span className={step >= 1 ? "current" : ""}>1. Review posting</span><span className={step >= 2 ? "current" : ""}>2. Decide</span><span className={step >= 3 ? "current" : ""}>3. Find someone</span><span className={step >= 4 ? "current" : ""}>4. Prepare outreach</span></div>
+    <section className="detail-layout"><article className="panel detail-main"><div className="job-title-block"><p className="eyebrow">{job.requisition_id || "COLLECTED POSTING"}</p><h2>{job.title}</h2><p>{job.company} · {job.location || "Location unknown"}</p><a href={job.url} target="_blank" rel="noreferrer">Open original source ↗</a></div><section className="decision-block"><div><p className="eyebrow">STEP 2 · DECIDE</p><h2>Is this worth your time?</h2><p className="muted">You can change this later. Choosing Not for me removes it from your daily queue.</p></div><div className="decision-actions"><button className="primary" disabled={busy === "status"} onClick={() => { setBusy("status"); void onStatus("interested").finally(() => setBusy("")); }}>Interested</button><button className="secondary" onClick={() => void onStatus("applied")}>Already applied</button><button className="quiet-button" onClick={() => void onStatus("archived")}>Not for me</button></div></section><section className="research-block"><div className="section-heading"><div><p className="eyebrow">STEP 3 · PEOPLE</p><h2>Find someone worth learning from</h2><p className="muted">Public research is saved with sources. Nothing is contacted automatically.</p></div><button className="secondary" disabled={busy === "research" || !settings.brave_search_configured} onClick={() => void run("research")}>{busy === "research" ? "Researching…" : "Find people"}</button></div>{!settings.brave_search_configured && <SetupHint text="Add BRAVE_API_KEY in Settings to research public profiles." />}{job.contacts?.map((contact) => <ContactCard key={contact.id} job={job} contact={contact} settings={settings} perspective={perspective} setPerspective={setPerspective} busy={busy} run={run} onRefresh={onRefresh} onError={onError} />)}{job.status === "new" && !job.contacts?.length ? <Empty title="Decide first" text="Mark the job Interested to begin contact research." /> : null}</section></article><aside className="panel source-panel"><p className="eyebrow">STEP 1 · REVIEW POSTING</p><h2>Why this job is here</h2><h3>{job.title}</h3><div className="reason-list">{(job.priority_reasons ?? []).map((reason) => <span key={reason}>✓ {reason}</span>)}</div><details><summary>Show full job description</summary><div className="long-copy">{job.description || "No description was stored."}</div></details></aside></section>
+  </>;
 }
 
-function PipelineView({ dashboard }: { dashboard: Dashboard }) {
-  return (
-    <>
-      <header className="page-header compact">
-        <div>
-          <p className="eyebrow">IDEMPOTENT DAILY RUN</p>
-          <h1>Pipeline runs</h1>
-          <p>See exactly what ran, what deferred, and what needs attention.</p>
-        </div>
-      </header>
-      <section className="panel">
-        {dashboard.runs.length ? (
-          <div className="run-list">
-            {dashboard.runs.map((run) => (
-              <article key={run.id}>
-                <StatusBadge status={run.status} />
-                <div>
-                  <strong>{run.kind}</strong>
-                  <small>{new Date(run.started_at).toLocaleString()}</small>
-                </div>
-                <p>{run.error || "Completed without a recorded error."}</p>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <Empty title="No pipeline runs" text="Run `uv run job-outreach run-daily` when ready." />
-        )}
-      </section>
-    </>
-  );
+function ContactCard({ job, contact, settings, perspective, setPerspective, busy, run, onRefresh, onError }: { job: Job; contact: ContactDetail; settings: Settings; perspective: string; setPerspective: (value: string) => void; busy: string; run: (kind: "research" | "angles") => Promise<void>; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
+  const [channel, setChannel] = useState("connection_note"); const [context, setContext] = useState(""); const [followUp, setFollowUp] = useState(""); const [drafting, setDrafting] = useState(false); const latest = job.drafts?.filter((draft) => draft.contact_id === contact.id).at(-1);
+  const draft = async (angleId: number) => { setDrafting(true); try { await api(`/jobs/${job.id}/contacts/${contact.id}/drafts/generate`, { method: "POST", body: JSON.stringify({ kind: channel, angle_id: angleId, user_context: context }) }); await onRefresh(); } catch (error) { onError(error instanceof Error ? error.message : "Draft generation failed."); } finally { setDrafting(false); } };
+  const recordSent = async (draftValue: Draft) => { try { await api("/outreach-events", { method: "POST", body: JSON.stringify({ job_id: job.id, contact_id: contact.id, draft_id: draftValue.id, type: draftValue.kind === "email" ? "email_sent" : draftValue.kind === "connection_note" ? "connection_sent" : "message_sent", follow_up_at: followUp ? new Date(followUp).toISOString() : null }) }); await onRefresh(); } catch (error) { onError(error instanceof Error ? error.message : "Could not record the send."); } };
+  return <article className="contact-card"><div className="contact-heading"><div className="avatar">{contact.name.slice(0, 2).toUpperCase()}</div><div><h3>{contact.name}</h3><p>{contact.title} · {contact.company}</p></div>{contact.profile_url && <a href={contact.profile_url} target="_blank" rel="noreferrer">Profile ↗</a>}</div><p className="contact-rationale">{contact.rationale}</p>{contact.evidence?.map((item) => <blockquote key={item.id}><span>{item.kind} evidence</span><p>{item.excerpt}</p><a href={item.source_url} target="_blank" rel="noreferrer">Read source ↗</a></blockquote>)}<div className="angle-controls"><div className="section-heading"><div><p className="eyebrow">STEP 4 · CONVERSATION</p><h3>Choose what you genuinely want to ask</h3></div><button className="secondary" disabled={busy === "angles" || !settings.openrouter_configured} onClick={() => void run("angles")}>{busy === "angles" ? "Finding angles…" : "Find angles"}</button></div>{!settings.openrouter_configured && <SetupHint text="Add OPENROUTER_API_KEY in Settings to generate grounded angles." />}<textarea rows={2} placeholder="Optional perspective: what would you like to understand?" value={perspective} onChange={(event) => setPerspective(event.target.value)} />{contact.angles?.map((angle) => <div className="angle-card" key={angle.id}><strong>{angle.angle}</strong><p>{angle.question}</p><div className="draft-controls"><select aria-label="Outreach channel" value={channel} onChange={(event) => setChannel(event.target.value)}><option value="connection_note">LinkedIn connection note</option><option value="message">LinkedIn message</option><option value="email">Coffee-chat email</option></select><input aria-label="Truthful context" placeholder="Your context (optional)" value={context} onChange={(event) => setContext(event.target.value)} /><button className="primary" disabled={drafting} onClick={() => void draft(angle.id)}>{drafting ? "Drafting…" : "Draft"}</button></div></div>)}</div>{latest && <div className="draft"><div className="draft-header"><span className="eyebrow">DRAFT · MANUAL SEND ONLY</span><div><button onClick={() => void navigator.clipboard.writeText(latest.body)}>Copy</button><label>Follow up <input type="date" value={followUp} onChange={(event) => setFollowUp(event.target.value)} /></label><button onClick={() => void recordSent(latest)}>Mark sent</button></div></div>{latest.subjects.map((subject) => <strong key={subject}>Subject: {subject}</strong>)}<p>{latest.body}</p><small>{latest.body.length} characters</small></div>}</article>;
 }
 
-function SettingsView({
-  settings,
-  onDeleted,
-  onError,
-}: {
-  settings: Settings;
-  onDeleted: () => Promise<void>;
-  onError: (message: string) => void;
-}) {
-  const [deleting, setDeleting] = useState(false);
-  const integrations = [
-    ["Gmail read-only", settings.gmail_authorized, "uv run job-outreach gmail-auth"],
-    ["Brave Search", settings.brave_search_configured, "BRAVE_API_KEY"],
-    ["OpenRouter", settings.openrouter_configured, "OPENROUTER_API_KEY"],
-  ] as const;
-  const deleteData = async () => {
-    const confirmation = window.prompt(
-      "This permanently deletes every local job, contact, draft, and pipeline record. Type DELETE to continue.",
-    );
-    if (confirmation !== "DELETE") return;
-    setDeleting(true);
-    try {
-      await api("/data?confirm=DELETE", { method: "DELETE" });
-      await onDeleted();
-    } catch (requestError) {
-      onError(requestError instanceof Error ? requestError.message : "Could not delete local data.");
-    } finally {
-      setDeleting(false);
-    }
-  };
-  return (
-    <>
-      <header className="page-header compact">
-        <div>
-          <p className="eyebrow">SEPARATE CREDENTIALS</p>
-          <h1>Settings & privacy</h1>
-          <p>Configuration is read from your local .env; secret values are never displayed.</p>
-        </div>
-      </header>
-      <section className="settings-grid">
-        {integrations.map(([name, configured, instruction]) => (
-          <article className="panel integration" key={name}>
-            <div>
-              <span className={configured ? "health on" : "health"} />
-              <h2>{name}</h2>
-            </div>
-            <StatusBadge status={configured ? "configured" : "not_configured"} />
-            <p>{configured ? "Ready." : `Configure: ${instruction}`}</p>
-          </article>
-        ))}
-        <article className="panel guardrails">
-          <h2>Hard boundaries</h2>
-          <ul>
-            <li>No authenticated LinkedIn scraping</li>
-            <li>No automated connection requests, messages, or email</li>
-            <li>Public professional evidence only</li>
-            <li>AI output must cite stored evidence</li>
-            <li>Gmail bodies are discarded after extraction</li>
-          </ul>
-        </article>
-        <article className="panel data-controls">
-          <div>
-            <h2>Your local data</h2>
-            <p>Export a portable JSON backup or permanently clear the private workspace.</p>
-          </div>
-          <div className="data-actions">
-            <a className="secondary button-link" href="/api/export" download="job-outreach-export.json">
-              Export JSON
-            </a>
-            <button className="danger" disabled={deleting} onClick={() => void deleteData()}>
-              {deleting ? "Deleting…" : "Delete local data"}
-            </button>
-          </div>
-        </article>
-      </section>
-    </>
-  );
+function OutreachView({ items, onRefresh, onError }: { items: OutreachItem[]; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
+  const groups = useMemo(() => ({ draft: items.filter((item) => item.state === "draft"), sent: items.filter((item) => item.state === "sent"), follow: items.filter((item) => item.state.includes("follow_up")) }), [items]);
+  const recordReply = async (item: OutreachItem) => { try { await api("/outreach-events", { method: "POST", body: JSON.stringify({ job_id: item.job.id, contact_id: item.contact.id, draft_id: item.draft.id, type: "reply_received" }) }); await onRefresh(); } catch (error) { onError(error instanceof Error ? error.message : "Could not record reply."); } };
+  return <><header className="page-header compact"><div><p className="eyebrow">MANUAL OUTREACH</p><h1>Outreach</h1><p>Review drafts, record what you sent, and keep follow-ups visible.</p></div></header><section className="outreach-grid"><OutreachGroup title="Needs review" text="Drafts waiting for you to copy and send." items={groups.draft} actionLabel="Open job" /><OutreachGroup title="Follow-ups" text="People who need a response or follow-up." items={groups.follow} actionLabel="Record reply" onAction={recordReply} /><OutreachGroup title="Sent" text="Messages you have recorded as sent." items={groups.sent} actionLabel="Record reply" onAction={recordReply} /></section></>;
 }
 
-function Empty({ title, text }: { title: string; text: string }) {
-  return (
-    <div className="empty">
-      <span aria-hidden="true">◇</span>
-      <strong>{title}</strong>
-      <p>{text}</p>
-    </div>
-  );
+function OutreachGroup({ title, text, items, actionLabel, onAction }: { title: string; text: string; items: OutreachItem[]; actionLabel: string; onAction?: (item: OutreachItem) => void }) { return <section className="panel outreach-group"><div className="panel-title"><div><h2>{title}</h2><p>{text}</p></div><strong>{items.length}</strong></div>{items.length ? items.map((item) => <article className="outreach-item" key={item.id}><div><strong>{item.contact.name}</strong><small>{item.contact.title} · {item.job.title} at {item.job.company}</small></div><span className={`status status-${item.state}`}>{item.channel.replaceAll("_", " ")}</span><p>{item.draft.body}</p>{onAction && <button className="secondary" onClick={() => onAction(item)}>{actionLabel}</button>}</article>) : <Empty title="Nothing here" text="This queue is clear." />}</section>; }
+
+function SettingsView({ settings, onDeleted, onError }: { settings: Settings; onDeleted: () => Promise<void>; onError: (message: string) => void }) {
+  const [deleting, setDeleting] = useState(false); const integrations = [["Gmail read-only", settings.gmail_authorized, "Run: uv run job-outreach gmail-auth"], ["Brave Search", settings.brave_search_configured, "Set BRAVE_API_KEY in .env"], ["OpenRouter", settings.openrouter_configured, "Set OPENROUTER_API_KEY in .env"]] as const;
+  const deleteData = async () => { if (window.prompt("Type DELETE to permanently clear this private workspace.") !== "DELETE") return; setDeleting(true); try { await api("/data?confirm=DELETE", { method: "DELETE" }); await onDeleted(); } catch (error) { onError(error instanceof Error ? error.message : "Could not delete local data."); } finally { setDeleting(false); } };
+  return <><header className="page-header compact"><div><p className="eyebrow">WORKSPACE CONTROL</p><h1>Settings</h1><p>Connect services, understand automation, and manage your local data.</p></div></header><section className="settings-grid"><article className="panel automation-settings"><div className="section-heading"><div><h2>Automated search</h2><p>Weekdays collect jobs from configured alerts and public search. Research and messages always wait for your review.</p></div><span className="status status-configured">Local only</span></div></article>{integrations.map(([name, configured, instruction]) => <article className="panel integration" key={name}><div><span className={configured ? "health on" : "health"} /><h2>{name}</h2></div><StatusBadge status={configured ? "configured" : "not_configured"} /><p>{configured ? "Ready to use." : instruction}</p></article>)}<article className="panel guardrails"><h2>Privacy boundaries</h2><ul><li>No authenticated LinkedIn scraping</li><li>No automated connection requests, messages, or email</li><li>Public professional evidence only</li><li>AI output must cite stored evidence</li></ul></article><article className="panel data-controls"><div><h2>Your local data</h2><p>Export a portable backup or permanently clear this private workspace.</p></div><div className="data-actions"><a className="secondary button-link" href="/api/export" download="job-outreach-export.json">Export JSON</a><button className="danger" disabled={deleting} onClick={() => void deleteData()}>{deleting ? "Deleting…" : "Delete local data"}</button></div></article></section></>;
 }
 
-function SetupHint({ text }: { text: string }) {
-  return <p className="setup-hint">Setup needed · {text}</p>;
-}
+function SetupHint({ text }: { text: string }) { return <p className="setup-hint">Setup needed · {text}</p>; }
+function Empty({ title, text }: { title: string; text: string }) { return <div className="empty"><span aria-hidden="true">◇</span><strong>{title}</strong><p>{text}</p></div>; }
 
 export default App;
