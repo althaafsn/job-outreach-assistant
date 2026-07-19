@@ -21,9 +21,11 @@ from app.ai import (
     OpenRouterClient,
     UngroundedOutput,
     build_angle_prompt,
+    build_contact_selection_prompt,
     build_job_extraction_prompt,
     validate_job_extraction,
 )
+from app.domain import normalize_text
 from app.ingest import JobInput, parse_gmail_raw, record_ingest_message, upsert_job
 from app.integrations import (
     BraveSearchClient,
@@ -45,7 +47,8 @@ from app.models import (
 from app.research import (
     ContactCandidate,
     contact_queries,
-    rank_contacts,
+    evidence_rejection_reason,
+    person_research_queries,
     save_evidence,
     save_public_emails,
     save_recommendations,
@@ -324,64 +327,167 @@ def extract_pending_jobs(
     return processed
 
 
-def _candidate(result: SearchResult, company: str) -> ContactCandidate | None:
-    title = re.sub(r"\s*[|–-]\s*LinkedIn.*$", "", result.title, flags=re.IGNORECASE)
-    pieces = [piece.strip() for piece in re.split(r"\s+[|–-]\s+", title) if piece.strip()]
-    if not pieces:
-        return None
-    name = pieces[0]
-    role = pieces[1] if len(pieces) > 1 else result.snippet[:300]
-    if len(name.split()) < 2 or len(name) > 100:
-        return None
-    return ContactCandidate(name=name, title=role, company=company, profile_url=result.url)
-
-
 def research_job(
     session: Session,
     job: Job,
     search: BraveSearchClient,
+    ai: OpenRouterClient,
     *,
     department: str = "",
     read_page: Callable[[str], str] = read_public_page,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
-    candidates: list[ContactCandidate] = []
-    sources: dict[str, SearchResult] = {}
+    def report(**event: Any) -> None:
+        if progress:
+            progress(event)
+
+    discovered: list[SearchResult] = []
+    seen_urls: set[str] = set()
     for query in contact_queries(company=job.company, department=department, job_title=job.title):
-        for result in search.search(query):
-            candidate = _candidate(result, job.company)
-            if candidate and candidate.profile_url not in sources:
-                candidates.append(candidate)
-                sources[candidate.profile_url or ""] = result
-    ranked = rank_contacts(
-        candidates,
-        company=job.company,
-        job_title=job.title,
-        department=department,
+        results = search.search(query)
+        report(event="search", phase="contact_discovery", query=query, results=len(results))
+        for result in results:
+            if result.url not in seen_urls:
+                seen_urls.add(result.url)
+                discovered.append(result)
+    numbered = {index: result for index, result in enumerate(discovered, start=1)}
+    if not numbered:
+        return 0
+    selection = ai.select_contacts(
+        build_contact_selection_prompt(
+            job={
+                "title": job.title,
+                "company": job.company,
+                "department": department,
+            },
+            results=[
+                {
+                    "id": result_id,
+                    "title": result.title,
+                    "url": result.url,
+                    "snippet": result.snippet,
+                }
+                for result_id, result in numbered.items()
+            ],
+        ),
+        allowed_result_ids=set(numbered),
     )
-    ids = save_recommendations(session, job, ranked)
-    for contact_id, candidate in zip(ids, ranked, strict=True):
-        source_result = sources.get(candidate.profile_url or "")
+    report(
+        event="model",
+        task="contact_selection",
+        model=selection.model,
+        selected=len(selection.value.contacts),
+    )
+    candidates: list[ContactCandidate] = []
+    for rank, choice in enumerate(selection.value.contacts, start=1):
+        source = numbered[choice.result_id]
+        if normalize_text(choice.name) not in normalize_text(
+            f"{source.title} {source.snippet}"
+        ):
+            report(
+                event="contact",
+                decision="rejected",
+                person=choice.name,
+                reason="Selected name is not grounded in the search result",
+            )
+            continue
+        candidates.append(
+            ContactCandidate(
+                name=choice.name,
+                title=choice.title,
+                company=job.company,
+                profile_url=source.url,
+                score=float(101 - rank),
+                rationale=choice.rationale,
+            )
+        )
+        report(
+            event="contact",
+            decision="accepted",
+            person=choice.name,
+            title=choice.title,
+            url=source.url,
+        )
+    ids = save_recommendations(session, job, candidates)
+    for contact_id, _candidate in zip(ids, candidates, strict=True):
         contact = session.get(Contact, contact_id)
-        if source_result and source_result.snippet and contact:
-            page_text = source_result.snippet
-            try:
-                page_text = read_page(source_result.url) or page_text
-            except (FetchRejected, UnsafeURL, httpx.HTTPError):
-                pass
-            save_evidence(
-                session,
-                contact,
-                title=source_result.title,
-                source_url=source_result.url,
-                excerpt=page_text,
-                kind="public_third_party",
+        if not contact:
+            continue
+        evidence_count = 0
+        researched_urls: set[str] = set()
+        for query in person_research_queries(name=contact.name, company=job.company):
+            results = search.search(query)
+            report(
+                event="search",
+                phase="person_research",
+                person=contact.name,
+                query=query,
+                results=len(results),
             )
-            save_public_emails(
-                session,
-                contact,
-                text=f"{source_result.title}\n{page_text}",
-                source_url=source_result.url,
-            )
+            for result in results:
+                if result.url in researched_urls or evidence_count >= 3:
+                    continue
+                researched_urls.add(result.url)
+                host = (urlsplit(result.url).hostname or "").casefold()
+                if host == "linkedin.com" or host.endswith(".linkedin.com"):
+                    report(
+                        event="source",
+                        decision="rejected",
+                        person=contact.name,
+                        url=result.url,
+                        reason="LinkedIn is a profile link, not a research source",
+                    )
+                    continue
+                try:
+                    page_text = read_page(result.url)
+                except (FetchRejected, UnsafeURL, httpx.HTTPError) as exc:
+                    report(
+                        event="source",
+                        decision="rejected",
+                        person=contact.name,
+                        url=result.url,
+                        reason=str(exc),
+                    )
+                    continue
+                combined = f"{result.title}\n{result.snippet}\n{page_text}"
+                reason = evidence_rejection_reason(
+                    combined,
+                    person_name=contact.name,
+                    source_url=result.url,
+                )
+                if reason:
+                    report(
+                        event="source",
+                        decision="rejected",
+                        person=contact.name,
+                        url=result.url,
+                        reason=reason,
+                    )
+                    continue
+                evidence = save_evidence(
+                    session,
+                    contact,
+                    title=result.title,
+                    source_url=result.url,
+                    excerpt=combined,
+                    kind="public_third_party",
+                )
+                if evidence is None:
+                    continue
+                evidence_count += 1
+                report(
+                    event="source",
+                    decision="accepted",
+                    person=contact.name,
+                    url=result.url,
+                    evidence_id=evidence.id,
+                )
+                save_public_emails(
+                    session,
+                    contact,
+                    text=combined,
+                    source_url=result.url,
+                )
     return len(ids)
 
 

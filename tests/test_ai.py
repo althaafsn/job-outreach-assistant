@@ -61,6 +61,55 @@ def test_angle_output_accepts_common_free_model_field_aliases() -> None:
     assert output.angles[0].evidence_ids == [1]
 
 
+def test_contact_selection_is_bounded_and_rejects_unknown_results() -> None:
+    ai = _module()
+    assert ai is not None
+    output = ai.ContactSelection.model_validate(
+        {
+            "contacts": [
+                {
+                    "result_id": 7,
+                    "name": "Ada Lovelace",
+                    "title": "Research Data Manager",
+                    "company": "Example University",
+                    "rationale": "Leads the team named in the posting.",
+                }
+            ]
+        }
+    )
+    ai.require_known_contact_results(output, {7, 8})
+    with pytest.raises(ai.UngroundedOutput, match="Unknown search result IDs"):
+        ai.require_known_contact_results(output, {8})
+    with pytest.raises(ValidationError):
+        ai.ContactSelection.model_validate(
+            {"contacts": [output.contacts[0].model_dump()] * 4}
+        )
+
+
+def test_contact_selection_prompt_numbers_only_public_search_results() -> None:
+    ai = _module()
+    assert ai is not None
+    prompt = ai.build_contact_selection_prompt(
+        job={
+            "title": "Junior Data Coordinator",
+            "company": "Example University",
+            "department": "Research Data Services",
+        },
+        results=[
+            {
+                "id": 3,
+                "title": "Ada Lovelace - Research Data Manager",
+                "url": "https://example.edu/people/ada",
+                "snippet": "Ada leads Research Data Services.",
+            }
+        ],
+    )
+    assert '"id": 3' in prompt
+    assert "Junior Data Coordinator" in prompt
+    assert "Research Data Services" in prompt
+    assert "invent or guess email" in prompt
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -142,6 +191,49 @@ def test_openrouter_repairs_invalid_json_once_and_records_actual_model(tmp_path:
         assert calls == 2
         assert result.model == "meta-llama/free-model"
         assert result.value.angles[0].evidence_ids == [7]
+
+
+def test_openrouter_selects_only_allowed_search_results(tmp_path: Path) -> None:
+    ai = _module()
+    assert ai is not None
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "example/free",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "contacts": [
+                                        {
+                                            "result_id": 4,
+                                            "name": "Ada Lovelace",
+                                            "title": "Research Data Manager",
+                                            "company": "Example University",
+                                            "rationale": "Leads the relevant team.",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    with _session(tmp_path) as session:
+        client = ai.OpenRouterClient(
+            api_key="test",
+            session=session,
+            transport=httpx.MockTransport(handler),
+            daily_limit=1,
+        )
+        result = client.select_contacts("prompt", allowed_result_ids={4, 5})
+        assert result.model == "example/free"
+        assert result.value.contacts[0].result_id == 4
 
 
 def test_openrouter_defers_on_429_and_when_daily_quota_is_exhausted(

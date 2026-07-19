@@ -212,6 +212,20 @@ def test_builds_bounded_public_search_queries() -> None:
     assert any("-site:linkedin.com" in query for query in queries)
 
 
+def test_builds_person_specific_research_queries_without_linkedin() -> None:
+    research = _module()
+    assert research is not None
+    queries = research.person_research_queries(
+        name="Ada Lovelace",
+        company="Example University",
+    )
+    assert len(queries) == 3
+    assert all('"Ada Lovelace"' in query for query in queries)
+    assert all("-site:linkedin.com" in query for query in queries)
+    assert any("publication" in query for query in queries)
+    assert any("interview" in query for query in queries)
+
+
 def test_public_email_keeps_source_and_confidence_label(tmp_path: Path) -> None:
     research = _module()
     assert research is not None

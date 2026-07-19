@@ -224,3 +224,13 @@ def contact_queries(*, company: str, department: str, job_title: str) -> list[st
         f'-site:linkedin.com "{clean_company}" "{role_area}" team staff',
     ]
     return [query[:180] for query in queries if query.replace('"', "").strip()]
+
+
+def person_research_queries(*, name: str, company: str) -> list[str]:
+    clean_name = re.sub(r"\s+", " ", name).strip()
+    clean_company = re.sub(r"\s+", " ", company).strip()
+    return [
+        f'"{clean_name}" "{clean_company}" bio team -site:linkedin.com',
+        f'"{clean_name}" publication research project -site:linkedin.com',
+        f'"{clean_name}" interview talk product -site:linkedin.com',
+    ]

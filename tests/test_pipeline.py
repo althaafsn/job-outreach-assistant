@@ -177,17 +177,109 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
     pipeline = _module()
     assert pipeline is not None
     factory = _factory(tmp_path)
+    from app.ai import ContactSelection, Generated
 
     class Search:
-        def search(self, _query: str) -> list[SearchResult]:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str) -> list[SearchResult]:
+            self.queries.append(query)
+            if query.startswith('site:linkedin.com') or "team staff" in query:
+                return [
+                    SearchResult(
+                        title="Ada Lovelace - Manager, Research Data Services | LinkedIn",
+                        url="https://linkedin.com/in/ada",
+                        snippet=(
+                            "Ada Lovelace manages Research Data Services "
+                            "at Example University."
+                        ),
+                    )
+                ]
             return [
                 SearchResult(
-                    title="Ada Lovelace - Manager, Research Data Services",
-                    url="https://example.edu/people/ada",
-                    snippet="Short search snippet.",
-                )
+                    title="Ada Lovelace leads the Open Records Project",
+                    url="https://example.edu/news/open-records",
+                    snippet=(
+                        "Ada Lovelace explains how the Open Records Project makes "
+                        "validated public research data reusable."
+                    ),
+                ),
+                SearchResult(
+                    title="Ada Lovelace interview on research data stewardship",
+                    url="https://example.org/interviews/ada",
+                    snippet="Ada Lovelace discusses access, validation, and privacy.",
+                ),
+                SearchResult(
+                    title="Ada Lovelace | LinkedIn",
+                    url="https://linkedin.com/in/ada",
+                    snippet="Sign in or join now.",
+                ),
+                SearchResult(
+                    title="Ada Lovelace presents practical data validation",
+                    url="https://conference.example.edu/speakers/ada",
+                    snippet="Ada Lovelace presents lessons from practical validation work.",
+                ),
+                SearchResult(
+                    title="Ada Lovelace joins a reproducible research panel",
+                    url="https://events.example.org/reproducible-research",
+                    snippet="Ada Lovelace joins a public panel on reproducible research.",
+                ),
             ]
 
+    class AI:
+        def __init__(self) -> None:
+            self.allowed: set[int] = set()
+
+        def select_contacts(self, _prompt: str, *, allowed_result_ids: set[int]):
+            self.allowed = allowed_result_ids
+            return Generated(
+                value=ContactSelection.model_validate(
+                    {
+                        "contacts": [
+                            {
+                                "result_id": min(allowed_result_ids),
+                                "name": "Ada Lovelace",
+                                "title": "Manager, Research Data Services",
+                                "company": "Example University",
+                                "rationale": "Leads the data team named in the posting.",
+                            }
+                        ]
+                    }
+                ),
+                model="example/free",
+            )
+
+    pages = {
+        "https://example.edu/news/open-records": (
+            "Ada Lovelace leads the Open Records Project at Example University. "
+            "The project standardizes public research records and publishes reusable "
+            "documentation so community partners can audit and extend the datasets. "
+            "Lovelace explains how the team balances access, privacy, and validation. "
+            "Contact ada@example.edu."
+        ),
+        "https://example.org/interviews/ada": (
+            "In this public interview, Ada Lovelace discusses research data stewardship. "
+            "She describes lessons from training researchers, introducing validation "
+            "checks, and designing secure workflows that remain practical for users. "
+            "The discussion focuses on how feedback changed the team's approach."
+        ),
+        "https://conference.example.edu/speakers/ada": (
+            "Ada Lovelace presents practical data validation methods for research teams. "
+            "Her talk explains how small automated checks can expose inconsistent "
+            "records before they enter shared repositories, and how clear documentation "
+            "helps nontechnical collaborators resolve the underlying issues."
+        ),
+        "https://events.example.org/reproducible-research": (
+            "Ada Lovelace joins a public panel on reproducible research and open data. "
+            "The speakers compare approaches to audit trails, versioned datasets, "
+            "privacy reviews, and documentation that enables other teams to reproduce "
+            "published findings without repeating the original extraction work."
+        ),
+    }
+    progress: list[dict] = []
+    search = Search()
+    ai = AI()
     with factory() as session:
         job = upsert_job(
             session,
@@ -201,22 +293,37 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
             pipeline.research_job(
                 session,
                 job,
-                    Search(),
-                    read_page=lambda _url: (
-                        "Ada Lovelace leads a public research data training program at "
-                        "Example University. The program teaches research teams to "
-                        "validate records, document reproducible workflows, and protect "
-                        "sensitive information. Contact ada@example.edu."
-                    ),
-                )
+                search,
+                ai,
+                read_page=lambda url: pages[url],
+                progress=progress.append,
+            )
             == 1
         )
-        evidence = session.scalar(select(ContactEvidence))
-        assert evidence is not None
-        assert "training program" in evidence.excerpt
+        evidence = session.scalars(select(ContactEvidence)).all()
+        assert len(evidence) == 3
+        assert not any(
+            row.source_url == "https://events.example.org/reproducible-research"
+            for row in evidence
+        )
+        assert all("linkedin.com" not in row.source_url for row in evidence)
+        assert any("Open Records Project" in row.excerpt for row in evidence)
         email = session.scalar(select(ContactEmail))
         assert email is not None
         assert email.email == "ada@example.edu"
+        assert len(search.queries) == 6
+        assert ai.allowed
+        assert any(event.get("event") == "search" for event in progress)
+        assert any(
+            event.get("event") == "source"
+            and event.get("decision") == "rejected"
+            and event.get("reason") == "LinkedIn is a profile link, not a research source"
+            for event in progress
+        )
+        assert any(
+            event.get("event") == "source" and event.get("decision") == "accepted"
+            for event in progress
+        )
 
 
 def _job_body() -> str:

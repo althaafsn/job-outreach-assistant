@@ -87,7 +87,15 @@ def _search(settings: Settings) -> BraveSearchClient:
 
 
 def _research_pending(settings: Settings, session: Session) -> int:
+    if not settings.brave_api_key or not settings.openrouter_api_key:
+        return 0
     search = _search(settings)
+    ai = OpenRouterClient(
+        api_key=settings.openrouter_api_key,
+        session=session,
+        model=settings.openrouter_model,
+        daily_limit=settings.openrouter_daily_request_limit,
+    )
     count = 0
     jobs = session.scalars(
         select(Job).where(
@@ -104,6 +112,7 @@ def _research_pending(settings: Settings, session: Session) -> int:
                 session,
                 job,
                 search,
+                ai,
                 department=settings.research_department,
             )
     return count

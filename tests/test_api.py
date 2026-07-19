@@ -440,7 +440,7 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
                 model="example/free",
             )
 
-    def fake_research(session: Session, job, _search, **_kwargs) -> int:
+    def fake_research(session: Session, job, _search, _ai, **_kwargs) -> int:
         contact_id = save_recommendations(
             session,
             job,

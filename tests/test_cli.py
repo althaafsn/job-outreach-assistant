@@ -74,13 +74,16 @@ def test_contact_research_only_uses_verified_jobs(tmp_path: Path, monkeypatch) -
     create_schema(engine)
     seen: list[int] = []
 
-    def research(_session, job, _search, **_kwargs):
+    def research(_session, job, _search, _ai, **_kwargs):
         seen.append(job.id)
         return 1
 
     monkeypatch.setattr(cli, "research_job", research)
     settings = SimpleNamespace(
         brave_api_key="test",
+        openrouter_api_key="test",
+        openrouter_model="openrouter/free",
+        openrouter_daily_request_limit=50,
         research_department="",
     )
     with make_session_factory(engine)() as session:

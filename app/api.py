@@ -679,6 +679,7 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 session,
                 job,
                 BraveSearchClient(api_key=settings.brave_api_key),
+                ai,
                 department=settings.research_department,
             )
         except DeferredIntegration as exc:
@@ -722,10 +723,13 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
     @app.post("/api/jobs/{job_id}/research")
     def research_contacts(job_id: int, session: Session = Depends(db)) -> Json:
         settings = get_settings()
-        if not settings.brave_api_key:
+        if not settings.brave_api_key or not settings.openrouter_api_key:
             raise HTTPException(
                 status_code=409,
-                detail="Brave Search is not configured. Add BRAVE_API_KEY to .env.",
+                detail=(
+                    "Brave Search and OpenRouter are required. Add BRAVE_API_KEY "
+                    "and OPENROUTER_API_KEY to .env."
+                ),
             )
         try:
             count = research_job(
@@ -734,9 +738,15 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 BraveSearchClient(
                     api_key=settings.brave_api_key,
                 ),
+                OpenRouterClient(
+                    api_key=settings.openrouter_api_key,
+                    session=session,
+                    model=settings.openrouter_model,
+                    daily_limit=settings.openrouter_daily_request_limit,
+                ),
                 department=settings.research_department,
             )
-        except DeferredIntegration as exc:
+        except (DeferredAI, DeferredIntegration) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"contacts": count}
 
