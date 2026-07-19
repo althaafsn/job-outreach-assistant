@@ -5,6 +5,8 @@ from pathlib import Path
 
 from sqlalchemy import inspect, text
 
+from app.models import Job
+
 
 def _load(name: str):
     try:
@@ -68,3 +70,24 @@ def test_local_sqlite_parent_directory_is_created(tmp_path: Path) -> None:
     engine = db_module.make_engine(f"sqlite:///{database}")
     db_module.create_schema(engine)
     assert database.exists()
+
+
+def test_job_quality_starts_pending_without_changing_application_status(tmp_path: Path) -> None:
+    db_module = _load("app.db")
+    assert db_module is not None
+    engine = db_module.make_engine(f"sqlite:///{tmp_path / 'quality.db'}")
+    db_module.create_schema(engine)
+    with db_module.make_session_factory(engine)() as session:
+        job = Job(
+            title="Needs processing",
+            company="Needs review",
+            description="Discovered from an alert.",
+            identity_keys_json='["url:https://example.com/job/1"]',
+        )
+        session.add(job)
+        session.commit()
+
+        assert job.status == "new"
+        assert job.quality_status == "pending"
+        assert job.extraction_attempts == 0
+        assert job.extraction_error is None
