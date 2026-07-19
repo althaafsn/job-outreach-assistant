@@ -23,6 +23,7 @@ generation, schema validation, evaluation fixtures, and human review.
 
 ## Verified release baseline
 
+- Repository: https://github.com/althaafsn/job-outreach-assistant
 - Backend: 58 tests passed; 82% statement coverage.
 - Static checks: Ruff formatting/checks and strict mypy passed.
 - Frontend: 4 Vitest tests, ESLint, TypeScript, and Vite production build passed.
@@ -32,6 +33,8 @@ generation, schema validation, evaluation fixtures, and human review.
 - Privacy: local secret-pattern scan found no credentials; runtime data,
   `.env`, OAuth files, databases, and build outputs are ignored. CI runs
   Gitleaks against full Git history.
+- GitHub Actions release run:
+  https://github.com/althaafsn/job-outreach-assistant/actions/runs/29666410407
 
 ## Safe continuation sequence
 

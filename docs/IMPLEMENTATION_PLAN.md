@@ -160,8 +160,8 @@ draft composer, pipeline status, duplicate review, and settings/profile UI.
 - [x] Run backend tests, coverage, Ruff, mypy, frontend tests/lint/build.
 - [x] Run a secret scan and inspect tracked files for personal/runtime data.
 - [x] Exercise import → research → angle → draft → state tracking locally with mocks.
-- [ ] Commit verified checkpoints, create the public GitHub repository, and push.
-- [ ] Record the repository URL and exact verification results in the handoff.
+- [x] Commit verified checkpoints, create the public GitHub repository, and push.
+- [x] Record the repository URL and exact verification results in the handoff.
 
 ## Definition of done
 
