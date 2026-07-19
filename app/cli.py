@@ -79,11 +79,9 @@ def _runtime(settings: Settings) -> sessionmaker[Session]:
     return make_session_factory(engine)
 
 
-def _search(settings: Settings, session: Session) -> BraveSearchClient:
+def _search(settings: Settings) -> BraveSearchClient:
     return BraveSearchClient(
         api_key=settings.brave_api_key,
-        session=session,
-        daily_limit=settings.brave_daily_query_limit,
     )
 
 
@@ -94,7 +92,7 @@ def _profile(settings: Settings) -> str:
 
 
 def _research_pending(settings: Settings, session: Session) -> int:
-    search = _search(settings, session)
+    search = _search(settings)
     count = 0
     jobs = session.scalars(select(Job).where(Job.duplicate_of_id.is_(None))).all()
     for job in jobs:
@@ -133,7 +131,7 @@ def _generate_pending(settings: Settings, session: Session) -> int:
 def _backfill_target(settings: Settings, session: Session, *, query: str) -> int:
     return backfill_jobs(
         session,
-        _search(settings, session),
+        _search(settings),
         query=f"{query} {settings.target_location}",
     )
 
@@ -242,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
             print(
                 backfill_jobs(
                     session,
-                    _search(settings, session),
+                    _search(settings),
                     query=f"{query} {settings.target_location}",
                     months=args.months,
                 )

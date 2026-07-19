@@ -307,7 +307,6 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             "gmail_authorized": settings.gmail_token_file.exists(),
             "openrouter_model": settings.openrouter_model,
             "openrouter_daily_limit": settings.openrouter_daily_request_limit,
-            "brave_daily_limit": settings.brave_daily_query_limit,
             "target_job_queries": settings.target_job_queries.split("|"),
             "target_location": settings.target_location,
         }
@@ -589,8 +588,6 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 require_job(job_id, session),
                 BraveSearchClient(
                     api_key=settings.brave_api_key,
-                    session=session,
-                    daily_limit=settings.brave_daily_query_limit,
                 ),
                 department=settings.research_department,
             )

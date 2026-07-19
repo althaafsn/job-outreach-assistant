@@ -25,7 +25,7 @@ OpenRouter free router, React 19, TypeScript, Vite, Vitest, and plain CSS.
 - Local single-user v1 binds to `127.0.0.1`; AWS deployment is deferred.
 - Keep credentials and data separate from every other project.
 - Default OpenRouter model: `openrouter/free`; maximum 25 application requests/day.
-- Default Brave Search budget: 30 queries/day, below 1,000 monthly searches.
+- Do not add an application-level Brave daily cap; Brave's own quota and rate limits remain authoritative.
 - Gmail permission is read-only: `https://www.googleapis.com/auth/gmail.readonly`.
 - No direct or authenticated LinkedIn scraping and no automated sending.
 - Store only short public professional evidence excerpts and source URLs.

@@ -30,10 +30,10 @@ processing status, extracted job fields, and source lineage.
 
 ### Brave Search
 
-Create a Brave Search API key, then set `BRAVE_API_KEY`. The application budget
-defaults to 30 queries/day, below 1,000 searches per month. Public pages are
-fetched directly first; Jina Reader is used only when direct retrieval fails
-and requires no separate configuration.
+Create a Brave Search API key, then set `BRAVE_API_KEY`. The application does
+not add a daily Brave cap; Brave's account quota, rate limits, and credentials
+remain authoritative. Public pages are fetched directly first; Jina Reader is
+used only when direct retrieval fails and requires no separate configuration.
 
 ### OpenRouter
 

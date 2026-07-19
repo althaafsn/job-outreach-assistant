@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.db import create_schema, make_engine, make_session_factory
+from app.models import UsageCounter
 from app.security import SafeFetcher
 
 
@@ -25,7 +26,7 @@ def _session(tmp_path: Path):
     return make_session_factory(engine)()
 
 
-def test_brave_search_uses_quota_and_returns_small_public_result_shape(
+def test_brave_search_does_not_apply_an_application_daily_cap(
     tmp_path: Path,
 ) -> None:
     integrations = _module()
@@ -56,8 +57,6 @@ def test_brave_search_uses_quota_and_returns_small_public_result_shape(
     with _session(tmp_path) as session:
         client = integrations.BraveSearchClient(
             api_key="key",
-            session=session,
-            daily_limit=1,
             transport=httpx.MockTransport(handler),
         )
         results = client.search('"Example University" research data manager')
@@ -70,15 +69,15 @@ def test_brave_search_uses_quota_and_returns_small_public_result_shape(
         ]
         assert "q=" in str(seen[0].url)
         assert seen[0].headers["x-subscription-token"] == "key"
-        with pytest.raises(integrations.DeferredIntegration):
-            client.search("another query")
+        assert client.search("another query") == results
+        assert session.query(UsageCounter).count() == 0
 
 
 def test_brave_search_requires_its_own_credentials(tmp_path: Path) -> None:
     integrations = _module()
     assert integrations is not None
     with _session(tmp_path) as session:
-        client = integrations.BraveSearchClient(api_key="", session=session)
+        client = integrations.BraveSearchClient(api_key="")
         with pytest.raises(integrations.DeferredIntegration):
             client.search("query")
 

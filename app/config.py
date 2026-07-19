@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     openrouter_model: str = "openrouter/free"
     openrouter_daily_request_limit: int = 25
     brave_api_key: str = ""
-    brave_daily_query_limit: int = 30
     target_job_queries: str = "junior data engineer|junior software developer|data analyst"
     target_location: str = "Canada"
     research_department: str = ""

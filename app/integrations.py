@@ -10,9 +10,7 @@ from bs4 import BeautifulSoup
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from sqlalchemy.orm import Session
 
-from app.quotas import reserve
 from app.security import FetchRejected, SafeFetcher, validate_public_url
 
 GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
@@ -38,13 +36,9 @@ class BraveSearchClient:
         self,
         *,
         api_key: str,
-        session: Session,
-        daily_limit: int = 30,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_key = api_key
-        self.session = session
-        self.daily_limit = daily_limit
         self.client = httpx.Client(
             base_url="https://api.search.brave.com",
             transport=transport,
@@ -55,8 +49,6 @@ class BraveSearchClient:
     def search(self, query: str, *, start: int = 0) -> list[SearchResult]:
         if not self.api_key:
             raise DeferredIntegration("Brave Search is not configured")
-        if not reserve(self.session, "brave_search", self.daily_limit):
-            raise DeferredIntegration("Daily Brave search budget is exhausted")
         response = self.client.get(
             "/res/v1/web/search",
             params={
