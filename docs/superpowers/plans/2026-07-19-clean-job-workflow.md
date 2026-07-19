@@ -14,6 +14,12 @@ research and evidence-grounded angle generation.
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy, Alembic, SQLite, Pydantic,
 httpx, OpenRouter, Brave Search, React, TypeScript, Vitest, and plain CSS.
 
+**Implementation status (2026-07-19):** Complete. The production build is
+served locally, the existing database was backed up and migrated without
+changing row counts or application state, and a configured OpenRouter smoke
+test correctly rejected a collection/login page instead of publishing it as a
+job. The checkbox steps below remain as the original execution record.
+
 ## Global Constraints
 
 - Preserve application state, notes, contacts, drafts, and source lineage.
@@ -173,4 +179,3 @@ httpx, OpenRouter, Brave Search, React, TypeScript, Vitest, and plain CSS.
 - [ ] Run `npm test`, `npm run lint`, and `npm run build` from `web/`.
 - [ ] Review the full diff, scan tracked files for secrets/runtime data, commit,
   and push the branch.
-
