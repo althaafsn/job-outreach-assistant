@@ -44,6 +44,16 @@ def test_daily_run_records_success_and_prevents_overlap(tmp_path: Path) -> None:
             pipeline.run_steps(factory, lock_path, [])
 
 
+def test_gmail_title_extraction_ignores_tracking_query_parameters() -> None:
+    pipeline = _module()
+    assert pipeline is not None
+    title = pipeline._title_before_link(
+        "Data Engineer https://www.linkedin.com/comm/jobs/view/123?trackingId=email",
+        "https://linkedin.com/jobs/view/123?refId=email",
+    )
+    assert title == "Data Engineer"
+
+
 def test_daily_run_records_failure_without_swallowing_it(tmp_path: Path) -> None:
     pipeline = _module()
     assert pipeline is not None

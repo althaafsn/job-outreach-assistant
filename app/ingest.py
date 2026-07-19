@@ -108,6 +108,10 @@ def upsert_job(session: Session, incoming: JobInput) -> Job:
     else:
         merged_keys = sorted(set(json.loads(match.identity_keys_json)) | set(keys))
         match.identity_keys_json = json.dumps(merged_keys)
+        existing_placeholder = match.title.casefold().startswith("linkedin job ")
+        incoming_is_real = not incoming.title.casefold().startswith("linkedin job ")
+        if existing_placeholder and incoming_is_real:
+            match.title = incoming.title
         if incoming.description and len(incoming.description) > len(match.description):
             match.description = incoming.description
     existing_source = session.scalar(
@@ -152,6 +156,8 @@ def parse_gmail_raw(external_id: str, raw: str) -> AlertMessage:
         clean = canonical_url(raw_link.rstrip(").,"))
         if clean and "linkedin.com/comm/jobs/view/" in clean:
             clean = clean.replace("/comm/jobs/view/", "/jobs/view/", 1)
+        if clean and "linkedin.com/jobs/view/" in clean:
+            clean = clean.split("?", 1)[0]
         if clean and "linkedin.com/jobs/view/" in clean and clean not in links:
             links.append(clean)
     received_at = None

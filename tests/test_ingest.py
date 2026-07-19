@@ -93,6 +93,36 @@ def test_upsert_is_idempotent_and_preserves_source_lineage(tmp_path: Path) -> No
         }
 
 
+def test_upsert_replaces_placeholder_title_with_alert_title(tmp_path: Path) -> None:
+    ingest = _module()
+    assert ingest is not None
+    with _session(tmp_path) as session:
+        first = ingest.upsert_job(
+            session,
+            ingest.JobInput(
+                title="LinkedIn job 123",
+                company="Needs review",
+                description="Imported from alert.",
+                url="https://linkedin.com/jobs/view/123",
+                source="gmail",
+                external_id="message-1:123",
+            ),
+        )
+        second = ingest.upsert_job(
+            session,
+            ingest.JobInput(
+                title="Data Engineer",
+                company="Needs review",
+                description="Imported from alert.",
+                url="https://linkedin.com/jobs/view/123",
+                source="gmail",
+                external_id="message-2:123",
+            ),
+        )
+        assert second.id == first.id
+        assert second.title == "Data Engineer"
+
+
 def test_decodes_multipart_gmail_alert_and_filters_job_links() -> None:
     ingest = _module()
     assert ingest is not None
@@ -121,7 +151,7 @@ def test_filters_current_linkedin_comm_job_links() -> None:
     assert ingest is not None
     mime = (
         "Content-Type: text/html; charset=utf-8\r\n\r\n"
-        '<a href="https://www.linkedin.com/comm/jobs/view/987654321/?trackingId=email">Job</a>'
+        '<a href="https://www.linkedin.com/comm/jobs/view/987654321/?trackingId=email&refId=token">Job</a>'
     )
     raw = base64.urlsafe_b64encode(mime.encode()).decode().rstrip("=")
     alert = ingest.parse_gmail_raw("gmail-current", raw)

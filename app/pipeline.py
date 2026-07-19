@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy import select
@@ -106,7 +107,7 @@ def run_steps(
 
 
 def _title_before_link(text: str, link: str) -> str:
-    job_id = link.rstrip("/").split("/")[-1]
+    job_id = urlsplit(link).path.rstrip("/").split("/")[-1]
     for line in text.splitlines():
         if job_id in line:
             title = re.sub(r"https?://\S+", "", line).strip(" -|")
