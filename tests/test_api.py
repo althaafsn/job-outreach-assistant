@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
+from app.ai import AngleOutput, Generated, JobExtraction
 from app.db import create_schema, make_engine
+from app.models import Contact
+from app.research import ContactCandidate, save_evidence, save_recommendations
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -36,7 +40,10 @@ def test_import_list_update_and_dashboard_flow(tmp_path: Path) -> None:
         )
         assert imported.status_code == 201
         job_id = imported.json()["id"]
-        assert client.get("/api/jobs").json()["items"][0]["requisition_id"] == "JR25237"
+        assert (
+            client.get("/api/jobs?quality_filter=all").json()["items"][0]["requisition_id"]
+            == "JR25237"
+        )
 
         updated = client.patch(
             f"/api/jobs/{job_id}",
@@ -53,7 +60,10 @@ def test_job_library_returns_total_and_supports_filters_and_pagination(tmp_path:
         first = client.post(
             "/api/jobs/import",
             json={
-                "text": "Junior Data Developer\nlocations\nVancouver, BC\nJob Summary\nBuild data tools.",
+                "text": (
+                    "Junior Data Developer\nlocations\nVancouver, BC\n"
+                    "Job Summary\nBuild data tools."
+                ),
                 "company": "Vancouver Research Lab",
             },
         ).json()["id"]
@@ -73,14 +83,16 @@ def test_job_library_returns_total_and_supports_filters_and_pagination(tmp_path:
         )
         client.patch(f"/api/jobs/{first}", json={"status": "interested"})
 
-        page = client.get("/api/jobs?limit=1&sort=company")
+        page = client.get("/api/jobs?quality_filter=all&limit=1&sort=company")
         assert page.status_code == 200
         assert page.json()["total"] == 3
         assert len(page.json()["items"]) == 1
         assert page.json()["has_more"] is True
         assert page.json()["facets"]["status"]["new"] == 2
 
-        filtered = client.get("/api/jobs?status_filter=interested&location_group=vancouver")
+        filtered = client.get(
+            "/api/jobs?quality_filter=all&status_filter=interested&location_group=vancouver"
+        )
         assert filtered.json()["total"] == 1
         assert filtered.json()["items"][0]["company"] == "Vancouver Research Lab"
 
@@ -98,7 +110,10 @@ def test_recommendations_demote_collection_pages(tmp_path: Path) -> None:
         specific = client.post(
             "/api/jobs/import",
             json={
-                "text": "Data Analyst\nlocations\nVancouver, BC\nJob Summary\nAnalyze data for the research team.",
+                "text": (
+                    "Data Analyst\nlocations\nVancouver, BC\nJob Summary\n"
+                    "Analyze data for the research team."
+                ),
                 "company": "Research Lab",
                 "url": "https://example.org/jobs/JR1",
             },
@@ -112,13 +127,16 @@ def test_dashboard_exposes_next_action_and_automation_summary(tmp_path: Path) ->
         client.post(
             "/api/jobs/import",
             json={
-                "text": "Junior Data Developer\nlocations\nVancouver, BC\nJob Summary\nBuild data tools.",
+                "text": (
+                    "Junior Data Developer\nlocations\nVancouver, BC\n"
+                    "Job Summary\nBuild data tools."
+                ),
                 "company": "Example University",
             },
         )
         dashboard = client.get("/api/dashboard").json()
-        assert dashboard["next_action"]["type"] == "review_job"
-        assert dashboard["next_action"]["job"]["title"] == "Junior Data Developer"
+        assert dashboard["next_action"]["type"] == "import_job"
+        assert dashboard["jobs"]["quality"]["pending"] == 1
         assert "last_run" in dashboard["automation"]
         assert "new_jobs" in dashboard["queues"]
 
@@ -143,7 +161,12 @@ def test_outreach_view_groups_drafts_and_send_state(tmp_path: Path) -> None:
         ).json()
         client.post(
             "/api/outreach-events",
-            json={"job_id": job_id, "contact_id": contact_id, "draft_id": draft["id"], "type": "connection_sent"},
+            json={
+                "job_id": job_id,
+                "contact_id": contact_id,
+                "draft_id": draft["id"],
+                "type": "connection_sent",
+            },
         )
         items = client.get("/api/outreach").json()["items"]
         assert len(items) == 1
@@ -308,3 +331,117 @@ def test_private_data_deletion_requires_explicit_confirmation(tmp_path: Path) ->
         assert deleted.status_code == 200
         assert deleted.json()["deleted"]["jobs"] == 1
         assert client.get("/api/jobs").json()["items"] == []
+
+
+def test_job_list_defaults_to_verified_and_exposes_quality_queue(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        pending = client.post(
+            "/api/jobs/import",
+            json={
+                "text": "Data Engineer\nJob Summary\nA public posting waiting for extraction.",
+                "company": "Example Health",
+            },
+        ).json()
+        assert pending["quality_status"] == "pending"
+        assert client.get("/api/jobs").json()["items"] == []
+        review = client.get("/api/jobs?quality_filter=pending").json()
+        assert review["total"] == 1
+        assert review["items"][0]["id"] == pending["id"]
+
+
+def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app import api
+    from app.config import get_settings
+
+    body = (
+        "Build reliable data pipelines, test production services, document decisions, "
+        "and collaborate with researchers and software developers. "
+    ) * 8
+    source = f"Data Engineer Example Health Vancouver, BC Responsibilities {body}"
+
+    class FakeOpenRouter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def extract_job(self, _prompt: str):
+            return Generated(
+                value=JobExtraction.model_validate(
+                    {
+                        "page_type": "individual_job",
+                        "title": "Data Engineer",
+                        "company": "Example Health",
+                        "location": "Vancouver, BC",
+                        "requisition_id": "JR12345",
+                        "posted_at": "2026-07-18",
+                        "sections": [{"heading": "Responsibilities", "text": body}],
+                        "reason": "",
+                    }
+                ),
+                model="example/free",
+            )
+
+        def generate_angles(self, _prompt: str, *, allowed_evidence_ids: set[int]):
+            evidence_id = min(allowed_evidence_ids)
+            return Generated(
+                value=AngleOutput.model_validate(
+                    {
+                        "angles": [
+                            {
+                                "angle": "Ask about launching the public data program.",
+                                "question": "What did its first users change about your approach?",
+                                "evidence_ids": [evidence_id],
+                            }
+                        ]
+                    }
+                ),
+                model="example/free",
+            )
+
+    def fake_research(session: Session, job, _search, **_kwargs) -> int:
+        contact_id = save_recommendations(
+            session,
+            job,
+            [
+                ContactCandidate(
+                    "Ada Lovelace",
+                    "Research Data Manager",
+                    "Example Health",
+                    "https://example.org/ada",
+                )
+            ],
+        )[0]
+        contact = session.get(Contact, contact_id)
+        assert contact is not None
+        save_evidence(
+            session,
+            contact,
+            title="Public program",
+            source_url="https://example.org/program",
+            excerpt="Ada launched a public research data training program.",
+            kind="official",
+        )
+        return 1
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setenv("BRAVE_API_KEY", "test")
+    get_settings.cache_clear()
+    monkeypatch.setattr(api, "OpenRouterClient", FakeOpenRouter)
+    monkeypatch.setattr(api, "research_job", fake_research)
+    try:
+        with _client(tmp_path) as client:
+            response = client.post(
+                "/api/workflow/analyze",
+                json={"text": source, "url": "https://example.org/jobs/JR12345"},
+            )
+            assert response.status_code == 200
+            result = response.json()
+            assert result["stage"] == "complete"
+            assert result["job"]["quality_status"] == "verified"
+            assert result["job"]["title"] == "Data Engineer"
+            assert result["job"]["contacts"][0]["name"] == "Ada Lovelace"
+            assert result["job"]["contacts"][0]["angles"][0]["question"].startswith("What did")
+    finally:
+        get_settings.cache_clear()

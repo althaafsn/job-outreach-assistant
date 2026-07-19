@@ -41,7 +41,7 @@ from app.models import (
     ResearchAngle,
     UsageCounter,
 )
-from app.pipeline import generate_angles, research_job
+from app.pipeline import extract_job, generate_angles, research_job
 from app.research import ContactCandidate, save_evidence, save_recommendations
 
 
@@ -127,6 +127,10 @@ def _job(job: Job) -> Json:
         "requisition_id": job.requisition_id,
         "url": job.canonical_url,
         "status": job.status,
+        "quality_status": job.quality_status,
+        "extraction_error": job.extraction_error,
+        "extraction_model": job.extraction_model,
+        "extracted_at": _iso(job.extracted_at),
         "notes": job.notes,
         "suspected_duplicate": job.suspected_duplicate,
         "posted_at": _iso(job.posted_at),
@@ -142,7 +146,9 @@ def _job_priority(job: Job) -> tuple[int, list[str]]:
     title = job.title.casefold()
     score = 0
     reasons: list[str] = []
-    queries = [item.strip().casefold() for item in settings.target_job_queries.split("|") if item.strip()]
+    queries = [
+        item.strip().casefold() for item in settings.target_job_queries.split("|") if item.strip()
+    ]
     for query in queries:
         if query in title:
             score += 40
@@ -150,7 +156,10 @@ def _job_priority(job: Job) -> tuple[int, list[str]]:
             break
     stop_words = {"junior", "senior", "entry", "level", "and", "the", "of", "for"}
     target_words = {
-        word for query in queries for word in query.split() if len(word) > 2 and word not in stop_words
+        word
+        for query in queries
+        for word in query.split()
+        if len(word) > 2 and word not in stop_words
     }
     overlap = sorted(word for word in target_words if word in title)
     if overlap:
@@ -169,7 +178,9 @@ def _job_priority(job: Job) -> tuple[int, list[str]]:
         reasons.append("Located in Canada or another specified region")
 
     if job.posted_at:
-        age = datetime.now(UTC) - (job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC))
+        age = datetime.now(UTC) - (
+            job.posted_at if job.posted_at.tzinfo else job.posted_at.replace(tzinfo=UTC)
+        )
         if age <= timedelta(days=7):
             score += 20
             reasons.append("Posted within 7 days")
@@ -181,7 +192,8 @@ def _job_priority(job: Job) -> tuple[int, list[str]]:
     collection_terms = ("jobs", "job openings", "discover", "overview", "opportunities")
     source_text = f"{job.canonical_url or ''} {job.description}".casefold()
     collection_signal = any(term in title for term in collection_terms) or any(
-        term in source_text for term in ("jobsearch", "marketreport", "search?", "job postings", "view 37 job")
+        term in source_text
+        for term in ("jobsearch", "marketreport", "search?", "job postings", "view 37 job")
     )
     if not job.requisition_id and collection_signal:
         score -= 50
@@ -240,7 +252,9 @@ def _outreach_items(session: Session) -> list[Json]:
         latest_follow_up = next((event for event in events if event.follow_up_at), None)
         follow_up_at = latest_follow_up.follow_up_at if latest_follow_up else None
         if follow_up_at:
-            follow_up_value = follow_up_at if follow_up_at.tzinfo else follow_up_at.replace(tzinfo=UTC)
+            follow_up_value = (
+                follow_up_at if follow_up_at.tzinfo else follow_up_at.replace(tzinfo=UTC)
+            )
             state = "follow_up_due" if follow_up_value <= now else "follow_up_scheduled"
         elif latest_sent:
             state = "sent"
@@ -320,8 +334,17 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             )
         }
         all_jobs = session.scalars(
-            select(Job).where(Job.duplicate_of_id.is_(None))
+            select(Job).where(
+                Job.duplicate_of_id.is_(None),
+                Job.quality_status == "verified",
+            )
         ).all()
+        quality_counts = {
+            quality: count
+            for quality, count in session.execute(
+                select(Job.quality_status, func.count()).group_by(Job.quality_status)
+            )
+        }
         new_jobs = sorted(
             (row for row in all_jobs if row.status == "new"),
             key=lambda row: _job_sort_key(row, "recommended"),
@@ -350,6 +373,7 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 "new": statuses.get("new", 0),
                 "applied": statuses.get("applied", 0),
                 "archived": statuses.get("archived", 0),
+                "quality": quality_counts,
             },
             "contacts": session.scalar(select(func.count(Contact.id))) or 0,
             "follow_ups": session.scalar(
@@ -401,14 +425,20 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         location_group: str | None = None,
         posted_within: int | None = None,
         source: str | None = None,
+        quality_filter: str = "verified",
         sort: Literal["recommended", "newest", "company"] = "recommended",
         offset: int = 0,
         limit: int = 50,
         session: Session = Depends(db),
     ) -> Json:
         query = select(Job).where(Job.duplicate_of_id.is_(None))
+        if quality_filter != "all":
+            qualities = [item.strip() for item in quality_filter.split(",") if item.strip()]
+            query = query.where(Job.quality_status.in_(qualities or ["verified"]))
         if status_filter:
-            query = query.where(Job.status.in_([item.strip() for item in status_filter.split(",") if item.strip()]))
+            query = query.where(
+                Job.status.in_([item.strip() for item in status_filter.split(",") if item.strip()])
+            )
         if q:
             pattern = f"%{q[:100]}%"
             query = query.where(
@@ -417,7 +447,9 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 | Job.description.ilike(pattern)
             )
         if source:
-            query = query.where(Job.id.in_(select(JobSource.job_id).where(JobSource.source == source)))
+            query = query.where(
+                Job.id.in_(select(JobSource.job_id).where(JobSource.source == source))
+            )
         rows = session.scalars(query).all()
         rows = [row for row in rows if _location_matches(row, location_group)]
         if posted_within is not None:
@@ -425,7 +457,9 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             rows = [
                 row
                 for row in rows
-                if row.posted_at and (row.posted_at if row.posted_at.tzinfo else row.posted_at.replace(tzinfo=UTC)) >= cutoff
+                if row.posted_at
+                and (row.posted_at if row.posted_at.tzinfo else row.posted_at.replace(tzinfo=UTC))
+                >= cutoff
             ]
         rows.sort(key=lambda row: _job_sort_key(row, sort))
         status_facets: dict[str, int] = {}
@@ -445,7 +479,9 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         source_facets: dict[str, int] = {}
         if rows:
             for source_name in session.scalars(
-                select(JobSource.source).where(JobSource.job_id.in_([row.id for row in rows])).distinct()
+                select(JobSource.source)
+                .where(JobSource.job_id.in_([row.id for row in rows]))
+                .distinct()
             ):
                 source_facets[source_name] = source_facets.get(source_name, 0) + 1
         safe_offset = max(offset, 0)
@@ -457,7 +493,11 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             "offset": safe_offset,
             "limit": safe_limit,
             "has_more": safe_offset + safe_limit < len(rows),
-            "facets": {"status": status_facets, "location": location_facets, "source": source_facets},
+            "facets": {
+                "status": status_facets,
+                "location": location_facets,
+                "source": source_facets,
+            },
         }
 
     def require_job(job_id: int, session: Session) -> Job:
@@ -552,9 +592,101 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
     @app.post("/api/jobs/import", status_code=status.HTTP_201_CREATED)
     def import_job(body: JobImport, session: Session = Depends(db)) -> Json:
         incoming = parse_job_text(body.text, company=body.company, url=body.url)
+        incoming.description = body.text
         incoming.external_id = f"manual-{uuid.uuid4()}"
         row = upsert_job(session, incoming)
         return _job(row)
+
+    @app.post("/api/jobs/{job_id}/extract")
+    def extract_one_job(job_id: int, session: Session = Depends(db)) -> Json:
+        settings = get_settings()
+        if not settings.openrouter_api_key:
+            raise HTTPException(status_code=409, detail="OpenRouter is not configured")
+        job = require_job(job_id, session)
+        job.quality_status = "pending"
+        job.extraction_error = None
+        session.commit()
+        try:
+            extract_job(
+                session,
+                job,
+                OpenRouterClient(
+                    api_key=settings.openrouter_api_key,
+                    session=session,
+                    model=settings.openrouter_model,
+                    daily_limit=settings.openrouter_daily_request_limit,
+                ),
+            )
+        except DeferredAI as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _job(job)
+
+    @app.post("/api/workflow/analyze")
+    def analyze_workflow(body: JobImport, session: Session = Depends(db)) -> Json:
+        settings = get_settings()
+        if not settings.openrouter_api_key:
+            raise HTTPException(
+                status_code=409,
+                detail="OpenRouter is not configured. Add OPENROUTER_API_KEY to .env.",
+            )
+        incoming = parse_job_text(body.text, company=body.company, url=body.url)
+        incoming.description = body.text
+        incoming.external_id = f"manual-{uuid.uuid4()}"
+        job = upsert_job(session, incoming)
+        ai = OpenRouterClient(
+            api_key=settings.openrouter_api_key,
+            session=session,
+            model=settings.openrouter_model,
+            daily_limit=settings.openrouter_daily_request_limit,
+        )
+        warnings: list[str] = []
+        try:
+            extract_job(session, job, ai)
+        except DeferredAI as exc:
+            warnings.append(str(exc))
+            return {
+                "stage": "pending",
+                "warnings": warnings,
+                "job": job_detail(job.id, session),
+            }
+        if job.quality_status != "verified":
+            return {
+                "stage": job.quality_status,
+                "warnings": [job.extraction_error] if job.extraction_error else [],
+                "job": job_detail(job.id, session),
+            }
+        if not settings.brave_api_key:
+            return {
+                "stage": "job_verified",
+                "warnings": ["Brave Search is not configured."],
+                "job": job_detail(job.id, session),
+            }
+        try:
+            research_job(
+                session,
+                job,
+                BraveSearchClient(api_key=settings.brave_api_key),
+                department=settings.research_department,
+            )
+        except DeferredIntegration as exc:
+            warnings.append(str(exc))
+        if session.scalar(select(JobContact.id).where(JobContact.job_id == job.id)):
+            profile = (
+                settings.user_profile_file.read_text(encoding="utf-8")[:4000]
+                if settings.user_profile_file.exists()
+                else "Recent Computer Engineering graduate seeking entry-level roles."
+            )
+            try:
+                generate_angles(session, job, ai, profile_summary=profile)
+            except DeferredAI as exc:
+                warnings.append(str(exc))
+        detail = job_detail(job.id, session)
+        has_angles = any(contact["angles"] for contact in detail["contacts"])
+        return {
+            "stage": "complete" if has_angles else "people_found",
+            "warnings": warnings,
+            "job": detail,
+        }
 
     @app.patch("/api/jobs/{job_id}")
     def patch_job(job_id: int, body: JobPatch, session: Session = Depends(db)) -> Json:
@@ -788,7 +920,13 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
 
     @app.post("/api/outreach-events", status_code=status.HTTP_201_CREATED)
     def add_outreach(body: OutreachCreate, session: Session = Depends(db)) -> Json:
-        if body.type not in {"connection_sent", "message_sent", "email_sent", "reply_received", "follow_up_sent"}:
+        if body.type not in {
+            "connection_sent",
+            "message_sent",
+            "email_sent",
+            "reply_received",
+            "follow_up_sent",
+        }:
             raise HTTPException(status_code=422, detail="Unsupported outreach event type")
         event = OutreachEvent(**body.model_dump())
         session.add(event)
