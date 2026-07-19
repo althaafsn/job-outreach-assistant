@@ -59,6 +59,19 @@ def test_angle_output_accepts_common_free_model_field_aliases() -> None:
     )
     assert output.angles[0].angle.startswith("Ask about")
     assert output.angles[0].evidence_ids == [1]
+    title_output = ai.AngleOutput.model_validate(
+        {
+            "angles": [
+                {
+                    "title": "Discuss the public research program.",
+                    "question": "What changed after its first year?",
+                    "citations": [2],
+                }
+            ]
+        }
+    )
+    assert title_output.angles[0].angle.startswith("Discuss")
+    assert title_output.angles[0].evidence_ids == [2]
 
 
 def test_contact_selection_is_bounded_and_rejects_unknown_results() -> None:

@@ -71,13 +71,13 @@ class AngleSuggestion(StrictModel):
     angle: str = Field(
         min_length=10,
         max_length=500,
-        validation_alias=AliasChoices("angle", "topic"),
+        validation_alias=AliasChoices("angle", "topic", "title"),
     )
     question: str = Field(min_length=10, max_length=500)
     evidence_ids: list[int] = Field(
         min_length=1,
         max_length=4,
-        validation_alias=AliasChoices("evidence_ids", "cited_evidence"),
+        validation_alias=AliasChoices("evidence_ids", "cited_evidence", "citations"),
     )
 
 
@@ -383,7 +383,7 @@ class OpenRouterClient:
                 )
                 if attempt == 1:
                     break
-        raise DeferredAI(f"Model output failed validation: {last_error}")
+        raise DeferredAI("Model output did not match the required format") from last_error
 
     def generate_angles(
         self, prompt: str, *, allowed_evidence_ids: set[int]
