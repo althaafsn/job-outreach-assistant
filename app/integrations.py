@@ -73,6 +73,22 @@ class BraveSearchClient:
         ]
 
 
+def _page_text(raw: str) -> str:
+    soup = BeautifulSoup(raw, "html.parser")
+    for element in soup(["script", "style"]):
+        element.decompose()
+    return soup.get_text(" ", strip=True)[:50_000]
+
+
+def _is_login_shell(text: str) -> bool:
+    normalized = text.casefold()
+    return (
+        len(text) < 2_000
+        and "sign in" in normalized
+        and ("join now" in normalized or "log in" in normalized)
+    )
+
+
 def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
     own_fetcher = fetcher is None
     fetcher = fetcher or SafeFetcher()
@@ -80,12 +96,12 @@ def read_public_page(url: str, *, fetcher: SafeFetcher | None = None) -> str:
         validate_public_url(url, resolver=fetcher.resolver)
         try:
             raw = fetcher.get_text(url)
+            text = _page_text(raw)
+            if _is_login_shell(text):
+                text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
         except (FetchRejected, httpx.HTTPError):
-            raw = fetcher.get_text(f"https://r.jina.ai/{url}")
-        soup = BeautifulSoup(raw, "html.parser")
-        for element in soup(["script", "style"]):
-            element.decompose()
-        return soup.get_text(" ", strip=True)[:50_000]
+            text = _page_text(fetcher.get_text(f"https://r.jina.ai/{url}"))
+        return text
     finally:
         if own_fetcher:
             fetcher.close()

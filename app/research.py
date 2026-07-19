@@ -182,9 +182,10 @@ def contact_queries(*, company: str, department: str, job_title: str) -> list[st
     clean_company = re.sub(r"\s+", " ", company).strip()
     clean_department = re.sub(r"\s+", " ", department).strip()
     role_area = " ".join(normalize_text(job_title).split()[:4])
+    department_term = f'"{clean_department}" ' if clean_department else ""
     queries = [
-        f'"{clean_company}" "{clean_department}" manager',
-        f'"{clean_company}" recruiter talent acquisition',
-        f'"{clean_company}" "{role_area}" team',
+        f'site:linkedin.com/in "{clean_company}" {department_term}manager',
+        f'site:linkedin.com/in "{clean_company}" recruiter "talent acquisition"',
+        f'-site:linkedin.com "{clean_company}" "{role_area}" team staff',
     ]
     return [query[:180] for query in queries if query.replace('"', "").strip()]

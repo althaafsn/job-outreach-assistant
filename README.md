@@ -31,12 +31,14 @@ Open <http://127.0.0.1:8000>. During frontend development, run
 
 ## How to use the workspace
 
-Start on **Today**. The page shows the next job or outreach action, the last
-automated search, and the queues that need your attention. Use **Jobs** to
-search and filter the complete collected-job library. Open a job and follow
-the four steps: review the posting, decide whether it is relevant, research a
-person using public sources, and prepare a grounded message. **Outreach** keeps
-drafts, sent messages, and follow-ups together. All messages remain manual.
+Start on **Find people**. Paste the complete text of a public job posting and,
+optionally, its URL. One action cleans and verifies the posting, finds up to
+three relevant people from public sources, and prepares cited conversation
+questions. Nothing is sent automatically.
+
+Use **Automation** to monitor recurring discovery and queues, **Jobs** to search
+the clean-job library or inspect pending/rejected records, and **Outreach** to
+review drafts and follow-ups.
 
 ## Optional integrations
 
@@ -57,6 +59,7 @@ job-outreach gmail-auth
 job-outreach ingest
 job-outreach import-text FILE
 job-outreach backfill --months 6
+job-outreach extract-pending
 job-outreach research-pending
 job-outreach run-daily
 job-outreach eval-ai

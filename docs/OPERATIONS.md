@@ -38,9 +38,17 @@ used only when direct retrieval fails and requires no separate configuration.
 ### OpenRouter
 
 Set `OPENROUTER_API_KEY`. The default model route is `openrouter/free`, with a
-25-request application budget per day. Actual routed model names are stored
+50-request application budget per day. Actual routed model names are stored
 with generated records. Model output is schema-validated and rejected if it
 cites evidence IDs not supplied in the request.
+
+## Immediate workflow
+
+Open <http://127.0.0.1:8000>, paste a complete public posting on **Find
+people**, and select **Find people to contact**. The posting is stored locally
+before processing. Verified job content appears in the normal job library;
+unresolved or rejected pages remain available through the Data quality filter.
+Contact evidence and AI conversation angles always include their public source.
 
 ## Daily automation
 

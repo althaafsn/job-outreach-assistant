@@ -330,7 +330,12 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         statuses: dict[str, int] = {
             job_status: count
             for job_status, count in session.execute(
-                select(Job.status, func.count()).group_by(Job.status)
+                select(Job.status, func.count())
+                .where(
+                    Job.duplicate_of_id.is_(None),
+                    Job.quality_status == "verified",
+                )
+                .group_by(Job.status)
             )
         }
         all_jobs = session.scalars(
@@ -343,6 +348,14 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             quality: count
             for quality, count in session.execute(
                 select(Job.quality_status, func.count()).group_by(Job.quality_status)
+            )
+        }
+        application_counts = {
+            job_status: count
+            for job_status, count in session.execute(
+                select(Job.status, func.count())
+                .where(Job.duplicate_of_id.is_(None))
+                .group_by(Job.status)
             )
         }
         new_jobs = sorted(
@@ -371,8 +384,8 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
             "jobs": {
                 "total": sum(statuses.values()),
                 "new": statuses.get("new", 0),
-                "applied": statuses.get("applied", 0),
-                "archived": statuses.get("archived", 0),
+                "applied": application_counts.get("applied", 0),
+                "archived": application_counts.get("archived", 0),
                 "quality": quality_counts,
             },
             "contacts": session.scalar(select(func.count(Contact.id))) or 0,
@@ -407,7 +420,7 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                 }
                 if latest_run
                 else None,
-                "next_run": "Weekdays at 08:05",
+                "next_run": "Daily at 08:05",
             },
             "next_action": next_action,
             "queues": {

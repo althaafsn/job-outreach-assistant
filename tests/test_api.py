@@ -51,7 +51,7 @@ def test_import_list_update_and_dashboard_flow(tmp_path: Path) -> None:
         )
         assert updated.json()["status"] == "applied"
         dashboard = client.get("/api/dashboard").json()
-        assert dashboard["jobs"]["total"] == 1
+        assert dashboard["jobs"]["total"] == 0
         assert dashboard["jobs"]["applied"] == 1
 
 
@@ -136,8 +136,11 @@ def test_dashboard_exposes_next_action_and_automation_summary(tmp_path: Path) ->
         )
         dashboard = client.get("/api/dashboard").json()
         assert dashboard["next_action"]["type"] == "import_job"
+        assert dashboard["jobs"]["total"] == 0
+        assert dashboard["jobs"]["new"] == 0
         assert dashboard["jobs"]["quality"]["pending"] == 1
         assert "last_run" in dashboard["automation"]
+        assert dashboard["automation"]["next_run"] == "Daily at 08:05"
         assert "new_jobs" in dashboard["queues"]
 
 

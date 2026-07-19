@@ -128,6 +128,8 @@ def test_builds_bounded_public_search_queries() -> None:
     assert 1 <= len(queries) <= 3
     assert all(len(query) <= 180 for query in queries)
     assert all("Example University" in query for query in queries)
+    assert sum("site:linkedin.com/in" in query for query in queries) == 2
+    assert any("-site:linkedin.com" in query for query in queries)
 
 
 def test_public_email_keeps_source_and_confidence_label(tmp_path: Path) -> None:

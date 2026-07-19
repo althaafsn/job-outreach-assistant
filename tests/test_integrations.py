@@ -76,7 +76,7 @@ def test_brave_search_does_not_apply_an_application_daily_cap(
 def test_brave_search_requires_its_own_credentials(tmp_path: Path) -> None:
     integrations = _module()
     assert integrations is not None
-    with _session(tmp_path) as session:
+    with _session(tmp_path):
         client = integrations.BraveSearchClient(api_key="")
         with pytest.raises(integrations.DeferredIntegration):
             client.search("query")
@@ -133,6 +133,38 @@ def test_public_page_reader_falls_back_to_jina_after_direct_failure() -> None:
     assert seen == [
         "https://example.edu/ada",
         "https://r.jina.ai/https://example.edu/ada",
+    ]
+
+
+def test_public_page_reader_falls_back_when_direct_page_is_a_login_shell() -> None:
+    integrations = _module()
+    assert integrations is not None
+    seen: list[str] = []
+
+    def public_dns(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "example.edu":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><main>Sign in to LinkedIn or join now to view this job.</main></html>",
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="# Data Engineer\n\nBuild secure pipelines for research data.",
+        )
+
+    fetcher = SafeFetcher(transport=httpx.MockTransport(handler), resolver=public_dns)
+    assert "Build secure pipelines" in integrations.read_public_page(
+        "https://example.edu/job", fetcher=fetcher
+    )
+    assert seen == [
+        "https://example.edu/job",
+        "https://r.jina.ai/https://example.edu/job",
     ]
 
 

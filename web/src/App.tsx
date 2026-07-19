@@ -1,7 +1,7 @@
 import { Dispatch, FormEvent, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import "./styles.css";
 
-type Page = "Today" | "Jobs" | "Outreach" | "Settings";
+type Page = "Start" | "Automation" | "Jobs" | "Outreach" | "Settings";
 type JobStatus = "new" | "interested" | "applied" | "archived";
 
 type Job = {
@@ -15,6 +15,8 @@ type Job = {
   status: string;
   notes: string;
   posted_at?: string;
+  quality_status?: string;
+  extraction_error?: string;
   priority?: number;
   priority_reasons?: string[];
   contacts?: ContactDetail[];
@@ -46,6 +48,7 @@ type OutreachItem = {
 };
 type Dashboard = {
   jobs: { total: number; new: number; applied: number; archived: number };
+  quality?: Record<string, number>;
   contacts: number;
   follow_ups: number;
   runs: { id: number; kind: string; status: string; started_at: string; error?: string }[];
@@ -62,7 +65,8 @@ type Settings = {
   target_location?: string;
 };
 type JobResponse = { items: Job[]; total: number; offset: number; limit: number; has_more: boolean; facets?: { source?: Record<string, number> } };
-type JobFilters = { query: string; status: string; location: string; posted: string; source: string; sort: string; offset: number };
+type WorkflowResult = { stage: string; warnings: string[]; job: Job };
+type JobFilters = { query: string; status: string; quality: string; location: string; posted: string; source: string; sort: string; offset: number };
 
 const emptyDashboard: Dashboard = {
   jobs: { total: 0, new: 0, applied: 0, archived: 0 },
@@ -101,9 +105,10 @@ function routeFromLocation(): { page: Page; jobId?: number } {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "jobs" && parts[1] && Number.isFinite(Number(parts[1]))) return { page: "Jobs", jobId: Number(parts[1]) };
   if (parts[0] === "jobs") return { page: "Jobs" };
+  if (parts[0] === "automation" || parts[0] === "today") return { page: "Automation" };
   if (parts[0] === "outreach") return { page: "Outreach" };
   if (parts[0] === "settings") return { page: "Settings" };
-  return { page: "Today" };
+  return { page: "Start" };
 }
 
 function App() {
@@ -115,7 +120,7 @@ function App() {
   const [outreach, setOutreach] = useState<OutreachItem[]>([]);
   const [settings, setSettings] = useState<Settings>({ openrouter_configured: false, brave_search_configured: false, gmail_authorized: false });
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [filters, setFilters] = useState<JobFilters>({ query: "", status: "", location: "", posted: "", source: "", sort: "recommended", offset: 0 });
+  const [filters, setFilters] = useState<JobFilters>({ query: "", status: "", quality: "verified", location: "", posted: "", source: "", sort: "recommended", offset: 0 });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -127,6 +132,7 @@ function App() {
     if (filters.location) params.set("location_group", filters.location);
     if (filters.posted) params.set("posted_within", filters.posted);
     if (filters.source) params.set("source", filters.source);
+    params.set("quality_filter", filters.quality);
     setJobsData(await api<JobResponse>(`/jobs?${params}`));
   }, [filters]);
   const loadAll = async () => {
@@ -160,7 +166,7 @@ function App() {
     void loadJobs().catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not load jobs."));
   }, [loadJobs]);
 
-  const navigate = (next: Page) => { window.history.pushState({}, "", next === "Today" ? "/today" : `/${next.toLowerCase()}`); setPage(next); setSelectedJob(null); setError(""); };
+  const navigate = (next: Page) => { window.history.pushState({}, "", next === "Start" ? "/" : `/${next.toLowerCase()}`); setPage(next); setSelectedJob(null); setError(""); };
   const openJob = async (id: number, pushHistory = true) => {
     setBusy("open-job");
     try { setSelectedJob(await api<Job>(`/jobs/${id}`)); if (pushHistory) window.history.pushState({}, "", `/jobs/${id}`); setPage("Jobs"); setError(""); }
@@ -174,9 +180,9 @@ function App() {
       <aside className="sidebar">
         <div className="brand"><strong>REACHBOARD</strong><span>PRIVATE WORKSPACE</span></div>
         <nav aria-label="Primary">
-          {(["Today", "Jobs", "Outreach", "Settings"] as Page[]).map((item) => (
+          {(["Start", "Automation", "Jobs", "Outreach", "Settings"] as Page[]).map((item) => (
             <button className={page === item ? "nav-item active" : "nav-item"} key={item} onClick={() => navigate(item)}>
-              <span aria-hidden="true">{item === "Today" ? "⌂" : item === "Jobs" ? "▤" : item === "Outreach" ? "✉" : "⚙"}</span>{item}
+              <span aria-hidden="true">{item === "Start" ? "◎" : item === "Automation" ? "↻" : item === "Jobs" ? "▤" : item === "Outreach" ? "✉" : "⚙"}</span>{item === "Start" ? "Find people" : item}
             </button>
           ))}
         </nav>
@@ -184,7 +190,8 @@ function App() {
       </aside>
       <main className="main">
         {error && <div className="alert" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
-        {page === "Today" && <TodayView dashboard={dashboard} onOpen={openJob} onNavigate={navigate} busy={busy} />}
+        {page === "Start" && <QuickStartView onError={setError} />}
+        {page === "Automation" && <AutomationView dashboard={dashboard} onOpen={openJob} onNavigate={navigate} busy={busy} />}
         {page === "Jobs" && (selectedJob ? <JobDetailView job={selectedJob} settings={settings} onBack={() => { window.history.pushState({}, "", "/jobs"); setSelectedJob(null); }} onRefresh={async () => { await openJob(selectedJob.id, false); await refreshAfterChange(); }} onError={setError} onStatus={async (status) => { await api(`/jobs/${selectedJob.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await refreshAfterChange(); await openJob(selectedJob.id, false); }} /> : <JobsView data={jobsData} filters={filters} setFilters={setFilters} onOpen={openJob} onImport={() => setImportOpen(true)} />)}
         {page === "Outreach" && <OutreachView items={outreach} onRefresh={refreshAfterChange} onError={setError} />}
         {page === "Settings" && <SettingsView settings={settings} onDeleted={refreshAfterChange} onError={setError} />}
@@ -194,16 +201,118 @@ function App() {
   );
 }
 
+function QuickStartView({ onError }: { onError: (message: string) => void }) {
+  const [text, setText] = useState("");
+  const [url, setUrl] = useState("");
+  const [result, setResult] = useState<WorkflowResult | null>(null);
+  const [working, setWorking] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setWorking(true);
+    try {
+      setResult(await api<WorkflowResult>("/workflow/analyze", {
+        method: "POST",
+        body: JSON.stringify({ text, url: url || null }),
+      }));
+      onError("");
+    } catch (requestError) {
+      onError(requestError instanceof Error ? requestError.message : "Could not analyze this posting.");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const reset = () => {
+    setText("");
+    setUrl("");
+    setResult(null);
+  };
+
+  if (result) {
+    return <WorkflowResultView result={result} onReset={reset} />;
+  }
+
+  return <div className="quick-shell">
+    <header className="quick-intro">
+      <div>
+        <p className="eyebrow">QUICK WORKFLOW</p>
+        <h1>Find people for this job</h1>
+        <p>Paste a public job posting. Reachboard will clean it, find relevant people, and turn their public work into conversation ideas.</p>
+      </div>
+      <span className="local-badge">● Local & private</span>
+    </header>
+    <section className="panel quick-form-panel">
+      <form className="quick-form" onSubmit={submit}>
+        <label>Public job URL (optional)
+          <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" />
+        </label>
+        <label>Job description
+          <textarea required rows={17} value={text} onChange={(event) => setText(event.target.value)} placeholder="Paste the complete job posting here…" />
+        </label>
+        {working && <div className="processing-steps" aria-live="polite">
+          <span><strong>1</strong> Clean the job</span>
+          <span><strong>2</strong> Find relevant people</span>
+          <span><strong>3</strong> Research public work</span>
+          <span><strong>4</strong> Prepare conversation ideas</span>
+        </div>}
+        <div className="quick-actions">
+          <small>Uses public sources. Nothing is contacted automatically.</small>
+          <button className="primary" disabled={working || !text.trim()}>{working ? "Analyzing and researching…" : "Find people to contact"}</button>
+        </div>
+      </form>
+    </section>
+  </div>;
+}
+
+function WorkflowResultView({ result, onReset }: { result: WorkflowResult; onReset: () => void }) {
+  const job = result.job;
+  return <div className="quick-shell">
+    <header className="quick-result-header">
+      <div><p className="eyebrow">ANALYSIS COMPLETE</p><h1>{job.title}</h1><p>{job.company} · {job.location || "Location unknown"}</p></div>
+      <button className="secondary" onClick={onReset}>Analyze another job</button>
+    </header>
+    {result.warnings.length > 0 && <div className="workflow-warning">{result.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
+    <section className="panel quick-job-summary">
+      <div><span className={`quality-pill quality-${job.quality_status ?? "pending"}`}>{job.quality_status === "verified" ? "Cleaned and verified" : "Needs review"}</span>{job.requisition_id && <span>{job.requisition_id}</span>}</div>
+      <details><summary>View cleaned job description</summary><div className="long-copy">{job.description}</div></details>
+    </section>
+    <section className="quick-people">
+      <div className="section-heading"><div><p className="eyebrow">PUBLIC RESEARCH</p><h2>People worth learning from</h2><p>Choose someone whose work you genuinely want to ask about.</p></div></div>
+      {job.contacts?.length ? job.contacts.map((contact) => <QuickContactCard contact={contact} key={contact.id} />) : <Empty title="No people found yet" text="The job was saved. Add Brave Search in Settings, or retry from the job library after configuring it." />}
+    </section>
+  </div>;
+}
+
+function QuickContactCard({ contact }: { contact: ContactDetail }) {
+  return <article className="panel quick-contact">
+    <div className="contact-heading">
+      <div className="avatar">{contact.name.slice(0, 2).toUpperCase()}</div>
+      <div><h3>{contact.name}</h3><p>{contact.title} · {contact.company}</p></div>
+      {contact.profile_url && <a href={contact.profile_url} target="_blank" rel="noreferrer">Open profile ↗</a>}
+    </div>
+    <p className="contact-rationale">{contact.rationale}</p>
+    {contact.evidence?.length > 0 && <div className="quick-evidence">
+      <h4>What they have worked on</h4>
+      {contact.evidence.map((item) => <blockquote key={item.id}><p>{item.excerpt}</p><a href={item.source_url} target="_blank" rel="noreferrer">{item.title || "Read public source"} ↗</a></blockquote>)}
+    </div>}
+    <div className="quick-angles">
+      <h4>Conversation ideas</h4>
+      {contact.angles?.length ? contact.angles.map((angle) => <div className="quick-angle" key={angle.id}><strong>{angle.angle}</strong><p>{angle.question}</p></div>) : <p className="muted">No grounded conversation angle was generated for this person.</p>}
+    </div>
+  </article>;
+}
+
 function AutomationCard({ dashboard }: { dashboard: Dashboard }) {
   const run = dashboard.automation?.last_run;
   return <div className="automation-card"><div><span className={`health ${run?.status === "completed" ? "on" : ""}`} /><strong>{run?.status === "completed" ? "Last search completed" : run ? "Search needs attention" : "Search has not run yet"}</strong></div><span>{run ? formatDate(run.started_at) : "Run the daily command to collect jobs"}</span><small>Next search: {dashboard.automation?.next_run ?? "Not scheduled"}</small></div>;
 }
 
-function TodayView({ dashboard, onOpen, onNavigate, busy }: { dashboard: Dashboard; onOpen: (id: number) => void; onNavigate: (page: Page) => void; busy: string }) {
+function AutomationView({ dashboard, onOpen, onNavigate, busy }: { dashboard: Dashboard; onOpen: (id: number) => void; onNavigate: (page: Page) => void; busy: string }) {
   const action = dashboard.next_action;
   const actionButton = action?.type === "review_draft" || action?.type === "follow_up" ? <button className="primary" onClick={() => onNavigate("Outreach")}>Open outreach</button> : action?.job ? <button className="primary" disabled={busy === "open-job"} onClick={() => onOpen(action.job!.id)}>{busy === "open-job" ? "Opening…" : "Review job"}</button> : <button className="primary" onClick={() => onNavigate("Jobs")}>Open job library</button>;
   return <>
-    <header className="page-header"><div><p className="eyebrow">YOUR NEXT ACTION</p><h1>Today</h1><p>Work through the most useful job and outreach actions first.</p></div><span className="local-badge">● Local & private</span></header>
+    <header className="page-header"><div><p className="eyebrow">AUTOMATED PIPELINE</p><h1>Automation</h1><p>Monitor collected jobs and work through the queues that need your attention.</p></div><span className="local-badge">● Local & private</span></header>
     <AutomationCard dashboard={dashboard} />
     <section className="today-layout">
       <article className="panel next-action"><div className="panel-title"><div><p className="eyebrow">DO THIS NEXT</p><h2>{action?.type === "follow_up" ? "Follow up with someone" : action?.type === "review_draft" ? "Review a draft" : action?.type === "continue_job" ? "Continue this job" : "Review a new job"}</h2></div></div>{action?.job ? <><h3>{action.job.title}</h3><p className="muted">{action.job.company} · {action.job.location || "Location unknown"}</p><div className="reason-list">{(action.job.priority_reasons ?? []).map((reason) => <span key={reason}>✓ {reason}</span>)}</div>{actionButton}</> : <Empty title="Your queue is clear" text="Import a job or wait for the next automated search." />}</article>
@@ -219,7 +328,7 @@ function JobsView({ data, filters, setFilters, onOpen, onImport }: { data: JobRe
   const update = (key: keyof JobFilters, value: string) => setFilters((current) => ({ ...current, [key]: value, offset: 0 }));
   return <>
     <header className="page-header compact"><div><p className="eyebrow">COMPLETE JOB LIBRARY</p><h1>Jobs</h1><p>Search every collected posting, then open one to begin the outreach workflow.</p></div><button className="primary" onClick={onImport}>＋ Import job</button></header>
-    <section className="panel library-panel"><div className="library-toolbar"><label className="search-field"><span className="sr-only">Search jobs</span><input aria-label="Search jobs" placeholder="Search title, company, description, or ID" value={filters.query} onChange={(event) => update("query", event.target.value)} /></label><label><span className="sr-only">Job status</span><select aria-label="Job status" value={filters.status} onChange={(event) => update("status", event.target.value)}><option value="">All statuses</option><option value="new">Needs decision</option><option value="interested">Interested</option><option value="applied">Applied</option><option value="archived">Not for me</option></select></label><label><span className="sr-only">Location</span><select aria-label="Location" value={filters.location} onChange={(event) => update("location", event.target.value)}><option value="">All Canada</option><option value="vancouver">Vancouver</option><option value="toronto">Toronto</option><option value="elsewhere_canada">Elsewhere in Canada</option><option value="unknown">Unknown</option></select></label><label><span className="sr-only">Source</span><select aria-label="Source" value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="">All sources</option>{Object.keys(data.facets?.source ?? {}).sort().map((source) => <option key={source} value={source}>{source}</option>)}</select></label><label><span className="sr-only">Posted within</span><select aria-label="Posted within" value={filters.posted} onChange={(event) => update("posted", event.target.value)}><option value="">Any age</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></label><label><span className="sr-only">Sort jobs</span><select aria-label="Sort jobs" value={filters.sort} onChange={(event) => update("sort", event.target.value)}><option value="recommended">Recommended</option><option value="newest">Newest</option><option value="company">Company</option></select></label></div><div className="library-meta"><strong>{data.total.toLocaleString()} {data.total === 1 ? "job" : "jobs"}</strong><span>Page {Math.floor(data.offset / data.limit) + 1}</span></div><div className="job-list">{data.items.length ? data.items.map((job) => <button className="job-row library-row" key={job.id} onClick={() => onOpen(job.id)}><span><strong>{job.title}</strong><small>{job.company} · {job.location || "Location unknown"} · {formatDate(job.posted_at)}</small>{job.priority_reasons?.length ? <em>{job.priority_reasons.slice(0, 3).join(" · ")}</em> : null}</span><StatusBadge status={job.status} /></button>) : <Empty title="No matching jobs" text="Try clearing a filter or import a new posting." />}</div><div className="pagination"><button className="secondary" disabled={data.offset === 0} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: Math.max(0, current.offset - 25) }))}>← Previous</button><button className="secondary" disabled={!data.has_more} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: current.offset + 25 }))}>Next →</button></div></section>
+    <section className="panel library-panel"><div className="library-toolbar"><label className="search-field"><span className="sr-only">Search jobs</span><input aria-label="Search jobs" placeholder="Search title, company, description, or ID" value={filters.query} onChange={(event) => update("query", event.target.value)} /></label><label><span className="sr-only">Data quality</span><select aria-label="Data quality" value={filters.quality} onChange={(event) => update("quality", event.target.value)}><option value="verified">Clean jobs</option><option value="pending">Waiting for extraction</option><option value="needs_review">Needs review</option><option value="rejected">Rejected pages</option><option value="all">All collected records</option></select></label><label><span className="sr-only">Job status</span><select aria-label="Job status" value={filters.status} onChange={(event) => update("status", event.target.value)}><option value="">All statuses</option><option value="new">Needs decision</option><option value="interested">Interested</option><option value="applied">Applied</option><option value="archived">Not for me</option></select></label><label><span className="sr-only">Location</span><select aria-label="Location" value={filters.location} onChange={(event) => update("location", event.target.value)}><option value="">All Canada</option><option value="vancouver">Vancouver</option><option value="toronto">Toronto</option><option value="elsewhere_canada">Elsewhere in Canada</option><option value="unknown">Unknown</option></select></label><label><span className="sr-only">Source</span><select aria-label="Source" value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="">All sources</option>{Object.keys(data.facets?.source ?? {}).sort().map((source) => <option key={source} value={source}>{source}</option>)}</select></label><label><span className="sr-only">Posted within</span><select aria-label="Posted within" value={filters.posted} onChange={(event) => update("posted", event.target.value)}><option value="">Any age</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></label><label><span className="sr-only">Sort jobs</span><select aria-label="Sort jobs" value={filters.sort} onChange={(event) => update("sort", event.target.value)}><option value="recommended">Recommended</option><option value="newest">Newest</option><option value="company">Company</option></select></label></div><div className="library-meta"><strong>{data.total.toLocaleString()} {data.total === 1 ? "job" : "jobs"}</strong><span>Page {Math.floor(data.offset / data.limit) + 1}</span></div><div className="job-list">{data.items.length ? data.items.map((job) => <button className="job-row library-row" key={job.id} onClick={() => onOpen(job.id)}><span><strong>{job.title}</strong><small>{job.company} · {job.location || "Location unknown"} · {formatDate(job.posted_at)}</small>{job.priority_reasons?.length ? <em>{job.priority_reasons.slice(0, 3).join(" · ")}</em> : null}</span><StatusBadge status={job.status} /></button>) : <Empty title="No matching jobs" text="Try clearing a filter or import a new posting." />}</div><div className="pagination"><button className="secondary" disabled={data.offset === 0} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: Math.max(0, current.offset - 25) }))}>← Previous</button><button className="secondary" disabled={!data.has_more} onClick={() => setFilters((current: typeof filters) => ({ ...current, offset: current.offset + 25 }))}>Next →</button></div></section>
   </>;
 }
 
@@ -258,7 +367,7 @@ function OutreachGroup({ title, text, items, actionLabel, onAction }: { title: s
 function SettingsView({ settings, onDeleted, onError }: { settings: Settings; onDeleted: () => Promise<void>; onError: (message: string) => void }) {
   const [deleting, setDeleting] = useState(false); const integrations = [["Gmail read-only", settings.gmail_authorized, "Run: uv run job-outreach gmail-auth"], ["Brave Search", settings.brave_search_configured, "Set BRAVE_API_KEY in .env"], ["OpenRouter", settings.openrouter_configured, "Set OPENROUTER_API_KEY in .env"]] as const;
   const deleteData = async () => { if (window.prompt("Type DELETE to permanently clear this private workspace.") !== "DELETE") return; setDeleting(true); try { await api("/data?confirm=DELETE", { method: "DELETE" }); await onDeleted(); } catch (error) { onError(error instanceof Error ? error.message : "Could not delete local data."); } finally { setDeleting(false); } };
-  return <><header className="page-header compact"><div><p className="eyebrow">WORKSPACE CONTROL</p><h1>Settings</h1><p>Connect services, understand automation, and manage your local data.</p></div></header><section className="settings-grid"><article className="panel automation-settings"><div className="section-heading"><div><h2>Automated search</h2><p>Weekdays collect jobs from configured alerts and public search. Research and messages always wait for your review.</p></div><span className="status status-configured">Local only</span></div></article>{integrations.map(([name, configured, instruction]) => <article className="panel integration" key={name}><div><span className={configured ? "health on" : "health"} /><h2>{name}</h2></div><StatusBadge status={configured ? "configured" : "not_configured"} /><p>{configured ? "Ready to use." : instruction}</p></article>)}<article className="panel guardrails"><h2>Privacy boundaries</h2><ul><li>No authenticated LinkedIn scraping</li><li>No automated connection requests, messages, or email</li><li>Public professional evidence only</li><li>AI output must cite stored evidence</li></ul></article><article className="panel data-controls"><div><h2>Your local data</h2><p>Export a portable backup or permanently clear this private workspace.</p></div><div className="data-actions"><a className="secondary button-link" href="/api/export" download="job-outreach-export.json">Export JSON</a><button className="danger" disabled={deleting} onClick={() => void deleteData()}>{deleting ? "Deleting…" : "Delete local data"}</button></div></article></section></>;
+  return <><header className="page-header compact"><div><p className="eyebrow">WORKSPACE CONTROL</p><h1>Settings</h1><p>Connect services, understand automation, and manage your local data.</p></div></header><section className="settings-grid"><article className="panel automation-settings"><div className="section-heading"><div><h2>Automated search</h2><p>Daily collection finds jobs from configured alerts and public search. Research and messages always wait for your review.</p></div><span className="status status-configured">Local only</span></div></article>{integrations.map(([name, configured, instruction]) => <article className="panel integration" key={name}><div><span className={configured ? "health on" : "health"} /><h2>{name}</h2></div><StatusBadge status={configured ? "configured" : "not_configured"} /><p>{configured ? "Ready to use." : instruction}</p></article>)}<article className="panel guardrails"><h2>Privacy boundaries</h2><ul><li>No authenticated LinkedIn scraping</li><li>No automated connection requests, messages, or email</li><li>Public professional evidence only</li><li>AI output must cite stored evidence</li></ul></article><article className="panel data-controls"><div><h2>Your local data</h2><p>Export a portable backup or permanently clear this private workspace.</p></div><div className="data-actions"><a className="secondary button-link" href="/api/export" download="job-outreach-export.json">Export JSON</a><button className="danger" disabled={deleting} onClick={() => void deleteData()}>{deleting ? "Deleting…" : "Delete local data"}</button></div></article></section></>;
 }
 
 function SetupHint({ text }: { text: string }) { return <p className="setup-hint">Setup needed · {text}</p>; }
