@@ -43,6 +43,24 @@ def test_angle_output_rejects_unknown_evidence_ids() -> None:
         ai.require_known_evidence(output, {1, 2})
 
 
+def test_angle_output_accepts_common_free_model_field_aliases() -> None:
+    ai = _module()
+    assert ai is not None
+    output = ai.AngleOutput.model_validate(
+        {
+            "conversation_angles": [
+                {
+                    "topic": "Ask about the public research program.",
+                    "question": "What changed your view while leading it?",
+                    "cited_evidence": [1],
+                }
+            ]
+        }
+    )
+    assert output.angles[0].angle.startswith("Ask about")
+    assert output.angles[0].evidence_ids == [1]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

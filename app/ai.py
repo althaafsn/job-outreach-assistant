@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.quotas import reserve
@@ -35,13 +35,25 @@ class JobExtraction(StrictModel):
 
 
 class AngleSuggestion(StrictModel):
-    angle: str = Field(min_length=10, max_length=500)
+    angle: str = Field(
+        min_length=10,
+        max_length=500,
+        validation_alias=AliasChoices("angle", "topic"),
+    )
     question: str = Field(min_length=10, max_length=500)
-    evidence_ids: list[int] = Field(min_length=1, max_length=4)
+    evidence_ids: list[int] = Field(
+        min_length=1,
+        max_length=4,
+        validation_alias=AliasChoices("evidence_ids", "cited_evidence"),
+    )
 
 
 class AngleOutput(StrictModel):
-    angles: list[AngleSuggestion] = Field(min_length=1, max_length=4)
+    angles: list[AngleSuggestion] = Field(
+        min_length=1,
+        max_length=4,
+        validation_alias=AliasChoices("angles", "conversation_angles"),
+    )
 
 
 class DraftOutput(StrictModel):
