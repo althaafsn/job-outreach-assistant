@@ -123,8 +123,8 @@ def test_validation_and_missing_resources_are_clear(tmp_path: Path) -> None:
 def test_optional_ai_and_search_actions_explain_missing_configuration(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("BRAVE_API_KEY", "")
     from app.config import get_settings
 
     get_settings.cache_clear()
