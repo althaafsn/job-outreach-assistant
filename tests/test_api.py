@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -10,6 +11,21 @@ from app.ai import AngleOutput, Generated, JobExtraction
 from app.db import create_schema, make_engine
 from app.models import Contact
 from app.research import ContactCandidate, save_evidence, save_recommendations
+
+
+def test_workflow_heartbeat_reports_a_slow_operation() -> None:
+    from app.api import _run_with_heartbeat
+
+    events: list[dict[str, object]] = []
+    result = _run_with_heartbeat(
+        lambda: (time.sleep(1.05), "done")[1],
+        emit=events.append,
+        stage=1,
+        message="Still working…",
+    )
+
+    assert result == "done"
+    assert any(event["detail"] == {"event": "heartbeat"} for event in events)
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -543,6 +559,11 @@ def test_paste_workflow_verifies_job_finds_people_and_generates_angles(
                 3,
                 4,
             ]
+            assert any(
+                event["type"] == "detail"
+                and event["detail"].get("event") == "job_extraction_started"
+                for event in events
+            )
             assert all(event["elapsed_ms"] >= 0 for event in events)
             assert any(
                 event.get("detail", {}).get("query") == '"Example Health" data manager'

@@ -6,7 +6,7 @@ import queue
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -322,6 +322,35 @@ def _workflow_detail_message(detail: Json) -> str:
         action = "Kept" if detail.get("decision") == "accepted" else "Skipped"
         return f"{action} a public source for {detail.get('person', 'this person')}."
     return "Research step completed."
+
+
+def _run_with_heartbeat(
+    operation: Callable[[], Any],
+    *,
+    emit: Callable[[Json], None],
+    stage: int,
+    message: str,
+) -> Any:
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(1):
+            emit(
+                {
+                    "type": "detail",
+                    "stage": stage,
+                    "message": message,
+                    "detail": {"event": "heartbeat"},
+                }
+            )
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        return operation()
+    finally:
+        stop.set()
+        thread.join(timeout=1)
 
 
 def create_app(target_engine: Engine = default_engine) -> FastAPI:
@@ -715,8 +744,21 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                         model=settings.openrouter_model,
                         daily_limit=settings.openrouter_daily_request_limit,
                     )
+                    emit(
+                        {
+                            "type": "detail",
+                            "stage": 1,
+                            "message": "Sending the posting to the extraction model…",
+                            "detail": {"event": "job_extraction_started"},
+                        }
+                    )
                     try:
-                        extract_job(session, job, ai)
+                        _run_with_heartbeat(
+                            lambda: extract_job(session, job, ai),
+                            emit=emit,
+                            stage=1,
+                            message="The extraction model is still verifying the posting…",
+                        )
                     except DeferredAI as exc:
                         warnings.append(str(exc))
                         emit({"type": "warning", "message": str(exc)})
@@ -743,7 +785,15 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                         complete(session, job, "job_verified", warnings)
                         return
 
-                    stage_three_started = False
+                    stage_three_started = True
+                    emit(
+                        {
+                            "type": "stage",
+                            "stage": 3,
+                            "total_stages": 4,
+                            "message": "Researching public work…",
+                        }
+                    )
 
                     def research_progress(detail: Json) -> None:
                         nonlocal stage_three_started
@@ -752,16 +802,6 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                             or detail.get("event") == "source"
                         )
                         stage = 3 if is_research else 2
-                        if stage == 3 and not stage_three_started:
-                            stage_three_started = True
-                            emit(
-                                {
-                                    "type": "stage",
-                                    "stage": 3,
-                                    "total_stages": 4,
-                                    "message": "Researching public work…",
-                                }
-                            )
                         emit(
                             {
                                 "type": "detail",
@@ -772,13 +812,18 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                         )
 
                     try:
-                        research_job(
-                            session,
-                            job,
-                            BraveSearchClient(api_key=settings.brave_api_key),
-                            ai,
-                            department=settings.research_department,
-                            progress=research_progress,
+                        _run_with_heartbeat(
+                            lambda: research_job(
+                                session,
+                                job,
+                                BraveSearchClient(api_key=settings.brave_api_key),
+                                ai,
+                                department=settings.research_department,
+                                progress=research_progress,
+                            ),
+                            emit=emit,
+                            stage=3,
+                            message="Public search and source checks are still running…",
                         )
                     except (DeferredAI, DeferredIntegration) as exc:
                         warnings.append(str(exc))
@@ -812,11 +857,16 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
                             )
                         )
                         try:
-                            created = generate_angles(
-                                session,
-                                job,
-                                ai,
-                                profile_summary=profile,
+                            created = _run_with_heartbeat(
+                                lambda: generate_angles(
+                                    session,
+                                    job,
+                                    ai,
+                                    profile_summary=profile,
+                                ),
+                                emit=emit,
+                                stage=4,
+                                message="The model is drafting grounded conversation ideas…",
                             )
                             emit(
                                 {
@@ -870,7 +920,11 @@ def create_app(target_engine: Engine = default_engine) -> FastAPI:
         return StreamingResponse(
             stream(),
             media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @app.patch("/api/jobs/{job_id}")
