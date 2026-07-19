@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
     openrouter_api_key: str = ""
     openrouter_model: str = "openrouter/free"
-    openrouter_daily_request_limit: int = 25
+    openrouter_daily_request_limit: int = 50
     brave_api_key: str = ""
     target_job_queries: str = "junior data engineer|junior software developer|data analyst"
     target_location: str = "Canada"

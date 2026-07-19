@@ -22,7 +22,7 @@ from app.models import Contact, ContactEvidence, Draft, Job, JobContact, Researc
 from app.pipeline import (
     Step,
     backfill_jobs,
-    generate_angles,
+    extract_pending_jobs,
     ingest_gmail,
     research_job,
     run_steps,
@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--query")
 
     commands.add_parser("research-pending")
+    commands.add_parser("extract-pending")
     commands.add_parser("run-daily")
     commands.add_parser("eval-ai")
 
@@ -85,16 +86,15 @@ def _search(settings: Settings) -> BraveSearchClient:
     )
 
 
-def _profile(settings: Settings) -> str:
-    if settings.user_profile_file.exists():
-        return settings.user_profile_file.read_text(encoding="utf-8")[:4000]
-    return "Recent Computer Engineering graduate seeking entry-level data and software roles."
-
-
 def _research_pending(settings: Settings, session: Session) -> int:
     search = _search(settings)
     count = 0
-    jobs = session.scalars(select(Job).where(Job.duplicate_of_id.is_(None))).all()
+    jobs = session.scalars(
+        select(Job).where(
+            Job.duplicate_of_id.is_(None),
+            Job.quality_status == "verified",
+        )
+    ).all()
     for job in jobs:
         has_contact = session.scalar(
             select(JobContact.id).where(JobContact.job_id == job.id).limit(1)
@@ -109,23 +109,19 @@ def _research_pending(settings: Settings, session: Session) -> int:
     return count
 
 
-def _generate_pending(settings: Settings, session: Session) -> int:
+def _extract_pending(settings: Settings, session: Session) -> int:
     if not settings.openrouter_api_key:
         return 0
-    client = OpenRouterClient(
-        api_key=settings.openrouter_api_key,
-        session=session,
-        model=settings.openrouter_model,
-        daily_limit=settings.openrouter_daily_request_limit,
+    return extract_pending_jobs(
+        session,
+        OpenRouterClient(
+            api_key=settings.openrouter_api_key,
+            session=session,
+            model=settings.openrouter_model,
+            daily_limit=settings.openrouter_daily_request_limit,
+        ),
+        max_jobs=settings.openrouter_daily_request_limit,
     )
-    count = 0
-    for job in session.scalars(select(Job)):
-        existing = session.scalar(
-            select(ResearchAngle.id).where(ResearchAngle.job_id == job.id).limit(1)
-        )
-        if not existing:
-            count += generate_angles(session, job, client, profile_summary=_profile(settings))
-    return count
 
 
 def _backfill_target(settings: Settings, session: Session, *, query: str) -> int:
@@ -247,6 +243,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         elif args.command == "research-pending":
             print(_research_pending(settings, session))
+        elif args.command == "extract-pending":
+            print(_extract_pending(settings, session))
         elif args.command == "eval-ai":
             fixtures = Path("evals/fixtures/contracts.json")
             rows = json.loads(fixtures.read_text(encoding="utf-8")) if fixtures.exists() else []
@@ -282,9 +280,10 @@ def main(argv: list[str] | None = None) -> None:
                             partial(_backfill_target, settings, query=query),
                         )
                     )
-                steps.append(("contacts", lambda db: _research_pending(settings, db)))
             if settings.openrouter_api_key:
-                steps.append(("angles", lambda db: _generate_pending(settings, db)))
+                steps.append(("extraction", lambda db: _extract_pending(settings, db)))
+            if settings.brave_api_key:
+                steps.append(("contacts", lambda db: _research_pending(settings, db)))
             try:
                 print(json.dumps(run_steps(sessions, Path("data/daily.lock"), steps), indent=2))
             except (DeferredAI, DeferredIntegration) as exc:

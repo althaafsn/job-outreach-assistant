@@ -167,7 +167,9 @@ def backfill_jobs(
     months: int = 6,
 ) -> int:
     since = (datetime.now(UTC) - timedelta(days=max(1, min(months, 12)) * 30)).date()
-    results = search.search(f"{query[:120]} jobs after:{since.isoformat()}")
+    results = search.search(
+        f'site:linkedin.com/jobs/view "{query[:120]}" after:{since.isoformat()}'
+    )
     imported = 0
     for result in results:
         title, _, company = result.title.partition(" - ")

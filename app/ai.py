@@ -255,7 +255,7 @@ class OpenRouterClient:
         api_key: str,
         session: Session,
         model: str = "openrouter/free",
-        daily_limit: int = 25,
+        daily_limit: int = 50,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_key = api_key

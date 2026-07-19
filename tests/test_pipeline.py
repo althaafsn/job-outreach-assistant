@@ -420,3 +420,25 @@ def test_pending_extraction_processes_newest_source_first(tmp_path: Path) -> Non
         assert "NEW Data Engineer" in calls[0]
         assert new.quality_status == "verified"
         assert old.quality_status == "pending"
+
+
+def test_brave_results_are_untrusted_pending_discoveries(tmp_path: Path) -> None:
+    pipeline = _module()
+    assert pipeline is not None
+
+    class Search:
+        def search(self, _query: str) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="Discover 2,000 Data Analyst Jobs | Indeed",
+                    url="https://example.com/data-jobs",
+                    snippet="Search thousands of jobs.",
+                )
+            ]
+
+    with _factory(tmp_path)() as session:
+        assert pipeline.backfill_jobs(session, Search(), query="data analyst") == 1
+        job = session.scalar(select(Job))
+        assert job is not None
+        assert job.quality_status == "pending"
+        assert job.description == "Search thousands of jobs."
