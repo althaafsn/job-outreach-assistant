@@ -36,6 +36,18 @@ optionally, its URL. One action cleans and verifies the posting, finds up to
 three relevant people from public sources, and prepares cited conversation
 questions. Nothing is sent automatically.
 
+While it runs, the page streams four stages: job verification, contact
+discovery, public-work research, and grounded conversation ideas. The concise
+view shows elapsed time and retained people/source counts. Expand **Technical
+details** to inspect sanitized Brave queries, the OpenRouter model used, public
+URLs, and why a source was accepted or rejected.
+
+Contact discovery uses one grounded model-selection call, then researches at
+most three selected people. It retains at most three meaningful public sources
+per person. LinkedIn may be shown as a profile link, but login pages and
+LinkedIn content are never stored or cited as evidence; conversation ideas are
+only generated when retained public evidence supports them.
+
 Use **Automation** to monitor recurring discovery and queues, **Jobs** to search
 the clean-job library or inspect pending/rejected records, and **Outreach** to
 review drafts and follow-ups.

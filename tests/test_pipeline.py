@@ -10,7 +10,15 @@ from sqlalchemy import select
 from app.db import create_schema, make_engine, make_session_factory
 from app.ingest import JobInput, upsert_job
 from app.integrations import SearchResult
-from app.models import ContactEmail, ContactEvidence, IngestMessage, Job, JobSource, PipelineRun
+from app.models import (
+    Contact,
+    ContactEmail,
+    ContactEvidence,
+    IngestMessage,
+    Job,
+    JobSource,
+    PipelineRun,
+)
 
 
 def _module():
@@ -322,6 +330,70 @@ def test_contact_research_reads_selected_public_pages(tmp_path: Path) -> None:
         )
         assert any(
             event.get("event") == "source" and event.get("decision") == "accepted"
+            for event in progress
+        )
+
+
+def test_contact_research_rejects_an_ungrounded_title(tmp_path: Path) -> None:
+    pipeline = _module()
+    assert pipeline is not None
+    factory = _factory(tmp_path)
+    from app.ai import ContactSelection, Generated
+
+    class Search:
+        def search(self, _query: str) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="Ada Lovelace, Research Data Manager",
+                    url="https://example.edu/team/ada",
+                    snippet="Ada Lovelace manages research data services.",
+                )
+            ]
+
+    class AI:
+        def select_contacts(self, _prompt: str, *, allowed_result_ids: set[int]):
+            return Generated(
+                value=ContactSelection.model_validate(
+                    {
+                        "contacts": [
+                            {
+                                "result_id": min(allowed_result_ids),
+                                "name": "Ada Lovelace",
+                                "title": "Vice President of Artificial Intelligence",
+                                "company": "Example University",
+                                "rationale": "A relevant leader at the named organization.",
+                            }
+                        ]
+                    }
+                ),
+                model="example/free",
+            )
+
+    progress: list[dict] = []
+    with factory() as session:
+        job = upsert_job(
+            session,
+            JobInput(
+                title="Junior Data Coordinator",
+                company="Example University",
+                description="Support research data services.",
+            ),
+        )
+        assert (
+            pipeline.research_job(
+                session,
+                job,
+                Search(),
+                AI(),
+                progress=progress.append,
+            )
+            == 0
+        )
+        assert session.scalars(select(Contact)).all() == []
+        assert any(
+            event.get("event") == "contact"
+            and event.get("decision") == "rejected"
+            and event.get("reason") == "Selected title is not grounded in the search result"
             for event in progress
         )
 

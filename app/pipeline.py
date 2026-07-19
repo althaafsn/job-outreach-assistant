@@ -381,14 +381,21 @@ def research_job(
     candidates: list[ContactCandidate] = []
     for rank, choice in enumerate(selection.value.contacts, start=1):
         source = numbered[choice.result_id]
-        if normalize_text(choice.name) not in normalize_text(
-            f"{source.title} {source.snippet}"
-        ):
+        source_text = normalize_text(f"{source.title} {source.snippet}")
+        if normalize_text(choice.name) not in source_text:
             report(
                 event="contact",
                 decision="rejected",
                 person=choice.name,
                 reason="Selected name is not grounded in the search result",
+            )
+            continue
+        if normalize_text(choice.title) not in source_text:
+            report(
+                event="contact",
+                decision="rejected",
+                person=choice.name,
+                reason="Selected title is not grounded in the search result",
             )
             continue
         candidates.append(
